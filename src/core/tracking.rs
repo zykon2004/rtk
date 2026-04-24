@@ -961,7 +961,7 @@ impl Tracker {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// Count commands since a given timestamp (for telemetry).
+    /// Count commands since a given timestamp.
     pub fn count_commands_since(&self, since: chrono::DateTime<chrono::Utc>) -> Result<i64> {
         let ts = since.format("%Y-%m-%dT%H:%M:%S").to_string();
         let count: i64 = self.conn.query_row(
@@ -972,7 +972,7 @@ impl Tracker {
         Ok(count)
     }
 
-    /// Get top N commands by frequency (for telemetry).
+    /// Get top N commands by frequency.
     pub fn top_commands(&self, limit: usize) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT rtk_cmd, COUNT(*) as cnt FROM commands
@@ -986,7 +986,7 @@ impl Tracker {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    /// Get overall savings percentage (for telemetry).
+    /// Get overall savings percentage.
     pub fn overall_savings_pct(&self) -> Result<f64> {
         let (total_input, total_saved): (i64, i64) = self.conn.query_row(
             "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(saved_tokens), 0) FROM commands",
@@ -1000,7 +1000,7 @@ impl Tracker {
         }
     }
 
-    /// Get total tokens saved across all tracked commands (for telemetry).
+    /// Get total tokens saved across all tracked commands.
     pub fn total_tokens_saved(&self) -> Result<i64> {
         let saved: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(saved_tokens), 0) FROM commands",
@@ -1010,7 +1010,7 @@ impl Tracker {
         Ok(saved)
     }
 
-    /// Get tokens saved in the last 24 hours (for telemetry).
+    /// Get tokens saved in the last 24 hours.
     pub fn tokens_saved_24h(&self, since: chrono::DateTime<chrono::Utc>) -> Result<i64> {
         let ts = since.format("%Y-%m-%dT%H:%M:%S").to_string();
         let saved: i64 = self.conn.query_row(
@@ -1022,7 +1022,7 @@ impl Tracker {
     }
 
     /// Top N passthrough commands (0% savings) — commands missing a filter.
-    /// Groups by first word only to avoid leaking arguments into telemetry.
+    /// Groups by first word only.
     pub fn top_passthrough(&self, limit: usize) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT TRIM(SUBSTR(original_cmd, 1, INSTR(original_cmd || ' ', ' ') - 1)) as tool,
@@ -1196,7 +1196,7 @@ impl Tracker {
     }
 }
 
-/// Map an rtk_cmd to an ecosystem category for telemetry.
+/// Map an rtk_cmd to an ecosystem category.
 fn categorize_command(rtk_cmd: &str) -> String {
     let parts: Vec<&str> = rtk_cmd.split_whitespace().collect();
     let tool = parts.get(1).copied().unwrap_or("other");
