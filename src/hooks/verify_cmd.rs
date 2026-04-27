@@ -9,6 +9,9 @@ use crate::core::toml_filter;
 /// - `filter`: if `Some`, only run tests for that filter name
 /// - `require_all`: fail if any filter has no inline tests
 pub fn run(filter: Option<String>, require_all: bool) -> Result<()> {
+    // One-time privacy-migration notice (no-op if already announced).
+    crate::core::tracking::print_privacy_migration_notice_if_needed();
+
     let results = toml_filter::run_filter_tests(filter.as_deref());
 
     let total = results.outcomes.len();

@@ -262,6 +262,9 @@ pub fn run(
     ctx: InitContext,
 ) -> Result<()> {
     let InitContext { dry_run, .. } = ctx;
+    // One-time privacy-migration notice (no-op if already announced).
+    crate::core::tracking::print_privacy_migration_notice_if_needed();
+
     // Validation: Codex mode conflicts
     if codex {
         if install_opencode {
