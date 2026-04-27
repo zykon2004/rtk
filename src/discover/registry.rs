@@ -55,7 +55,10 @@ lazy_static! {
         let single_quoted = r#"'(?:[^'\\]|\\.)*'"#;
         let unquoted = r#"[^\s]*"#;
         let env_value = format!("(?:{}|{}|{})", double_quoted, single_quoted, unquoted);
-        let env_assign = format!(r#"[A-Z_][A-Z0-9_]*={}"#, env_value);
+        // POSIX env assignments are conventionally uppercase but not enforced; bash/sh
+        // accept lowercase. Strip both so secrets like `token=… cmd` never reach the
+        // privacy-sanitization path as the apparent command name.
+        let env_assign = format!(r#"[A-Za-z_][A-Za-z0-9_]*={}"#, env_value);
         Regex::new(&format!(r#"^(?:sudo\s+|env\s+|{}\s+)+"#, env_assign)).unwrap()
     };
 }

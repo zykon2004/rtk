@@ -123,7 +123,6 @@ fn get_rewritten(cmd: &str) -> Option<String> {
 fn handle_vscode(cmd: &str) -> Result<()> {
     let verdict = permissions::check_command(cmd);
     if verdict == PermissionVerdict::Deny {
-        audit_log("deny", cmd, "");
         return Ok(());
     }
 
@@ -139,8 +138,6 @@ fn handle_vscode(cmd: &str) -> Result<()> {
         _ => "ask",
     };
 
-    audit_log("rewrite", cmd, &rewritten);
-
     let output = json!({
         "hookSpecificOutput": {
             "hookEventName": PRE_TOOL_USE_KEY,
@@ -155,7 +152,6 @@ fn handle_vscode(cmd: &str) -> Result<()> {
 
 fn handle_copilot_cli(cmd: &str) -> Result<()> {
     if permissions::check_command(cmd) == PermissionVerdict::Deny {
-        audit_log("deny", cmd, "");
         return Ok(());
     }
 
@@ -163,8 +159,6 @@ fn handle_copilot_cli(cmd: &str) -> Result<()> {
         Some(r) => r,
         None => return Ok(()),
     };
-
-    audit_log("rewrite", cmd, &rewritten);
 
     let output = json!({
         "permissionDecision": "deny",
@@ -216,10 +210,7 @@ pub fn run_gemini() -> Result<()> {
         .unwrap_or_default();
 
     match rewrite_command(cmd, &excluded) {
-        Some(ref rewritten) => {
-            audit_log("rewrite", cmd, rewritten);
-            print_rewrite(rewritten);
-        }
+        Some(ref rewritten) => print_rewrite(rewritten),
         None => print_allow(),
     }
 
@@ -242,59 +233,11 @@ fn print_rewrite(cmd: &str) {
     let _ = writeln!(io::stdout(), "{}", output);
 }
 
-// ── Audit logging ─────────────────────────────────────────────
-
-/// Best-effort audit log when RTK_HOOK_AUDIT=1.
-fn audit_log(action: &str, original: &str, rewritten: &str) {
-    if std::env::var("RTK_HOOK_AUDIT").as_deref() != Ok("1") {
-        return;
-    }
-    let _ = audit_log_inner(action, original, rewritten);
-}
-
-/// Escape newlines to prevent log-line injection in the pipe-delimited audit log.
-fn sanitize_log_field(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('|', "\\|")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-}
-
-fn audit_log_inner(action: &str, original: &str, rewritten: &str) -> Option<()> {
-    let home = dirs::home_dir()?;
-    let dir = home.join(".local").join("share").join("rtk");
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("hook-audit.log");
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .ok()?;
-    let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
-    writeln!(
-        file,
-        "{} | {} | {} | {}",
-        ts,
-        action,
-        sanitize_log_field(original),
-        sanitize_log_field(rewritten)
-    )
-    .ok()
-}
-
 // ── Claude Code native hook ────────────────────────────────────
 
 enum PayloadAction {
-    Rewrite {
-        cmd: String,
-        rewritten: String,
-        output: Value,
-    },
-    Skip {
-        reason: &'static str,
-        cmd: String,
-    },
-    Ignore,
+    Rewrite { output: Value },
+    Skip,
 }
 
 fn process_claude_payload(v: &Value) -> PayloadAction {
@@ -304,31 +247,23 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
         .filter(|c| !c.is_empty())
     {
         Some(c) => c,
-        None => return PayloadAction::Ignore,
+        None => return PayloadAction::Skip,
     };
 
     let verdict = permissions::check_command(cmd);
     if verdict == PermissionVerdict::Deny {
-        return PayloadAction::Skip {
-            reason: "skip:deny_rule",
-            cmd: cmd.to_string(),
-        };
+        return PayloadAction::Skip;
     }
 
     let rewritten = match get_rewritten(cmd) {
         Some(r) => r,
-        None => {
-            return PayloadAction::Skip {
-                reason: "skip:no_match",
-                cmd: cmd.to_string(),
-            }
-        }
+        None => return PayloadAction::Skip,
     };
 
     let updated_input = {
         let mut ti = v.get("tool_input").cloned().unwrap_or_else(|| json!({}));
         if let Some(obj) = ti.as_object_mut() {
-            obj.insert("command".into(), Value::String(rewritten.clone()));
+            obj.insert("command".into(), Value::String(rewritten));
         }
         ti
     };
@@ -347,8 +282,6 @@ fn process_claude_payload(v: &Value) -> PayloadAction {
     }
 
     PayloadAction::Rewrite {
-        cmd: cmd.to_string(),
-        rewritten,
         output: json!({ "hookSpecificOutput": hook_output }),
     }
 }
@@ -370,19 +303,8 @@ pub fn run_claude() -> Result<()> {
         }
     };
 
-    match process_claude_payload(&v) {
-        PayloadAction::Rewrite {
-            cmd,
-            rewritten,
-            output,
-        } => {
-            audit_log("rewrite", &cmd, &rewritten);
-            let _ = writeln!(io::stdout(), "{output}");
-        }
-        PayloadAction::Skip { reason, cmd } => {
-            audit_log(reason, &cmd, "");
-        }
-        PayloadAction::Ignore => {}
+    if let PayloadAction::Rewrite { output } = process_claude_payload(&v) {
+        let _ = writeln!(io::stdout(), "{output}");
     }
 
     Ok(())
@@ -392,8 +314,8 @@ pub fn run_claude() -> Result<()> {
 fn run_claude_inner(input: &str) -> Option<String> {
     let v: Value = serde_json::from_str(input).ok()?;
     match process_claude_payload(&v) {
-        PayloadAction::Rewrite { output, .. } => Some(output.to_string()),
-        _ => None,
+        PayloadAction::Rewrite { output } => Some(output.to_string()),
+        PayloadAction::Skip => None,
     }
 }
 
@@ -431,7 +353,6 @@ pub fn run_cursor() -> Result<()> {
 
     let verdict = permissions::check_command(&cmd);
     if verdict == PermissionVerdict::Deny {
-        audit_log("deny", &cmd, "");
         let _ = writeln!(io::stdout(), "{{}}");
         return Ok(());
     }
@@ -448,8 +369,6 @@ pub fn run_cursor() -> Result<()> {
         PermissionVerdict::Allow => "allow",
         _ => "ask",
     };
-
-    audit_log("rewrite", &cmd, &rewritten);
 
     let output = json!({
         "permission": decision,
@@ -808,65 +727,7 @@ mod tests {
         assert_eq!(v["permission"], "ask");
     }
 
-    // --- Audit logging ---
-
-    #[test]
-    fn test_audit_log_silent_when_disabled() {
-        std::env::remove_var("RTK_HOOK_AUDIT");
-        audit_log("test", "git status", "rtk git status");
-    }
-
-    #[test]
-    fn test_audit_log_format_four_fields() {
-        let tmp = std::env::temp_dir().join("rtk-test-audit");
-        let _ = std::fs::create_dir_all(&tmp);
-        let log_path = tmp.join("hook-audit.log");
-        let _ = std::fs::remove_file(&log_path);
-
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .unwrap();
-            let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
-            writeln!(file, "{} | rewrite | git status | rtk git status", ts).unwrap();
-        }
-
-        let content = std::fs::read_to_string(&log_path).unwrap();
-        let parts: Vec<&str> = content.trim().split(" | ").collect();
-        assert_eq!(
-            parts.len(),
-            4,
-            "Expected 4 pipe-delimited fields, got: {:?}",
-            parts
-        );
-        assert_eq!(parts[1], "rewrite");
-        assert_eq!(parts[2], "git status");
-        assert_eq!(parts[3], "rtk git status");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     // --- Adversarial tests ---
-
-    #[test]
-    fn test_audit_log_sanitizes_newlines() {
-        let sanitized = sanitize_log_field("git status\nfake | inject | evil");
-        assert!(!sanitized.contains('\n'));
-        assert!(sanitized.contains("\\n"));
-    }
-
-    #[test]
-    fn test_audit_log_sanitizes_pipe_delimiter() {
-        let sanitized = sanitize_log_field("git log | head");
-        assert!(
-            !sanitized.contains(" | "),
-            "unescaped ' | ' breaks field parsing: {}",
-            sanitized
-        );
-        assert!(sanitized.contains("\\|"));
-    }
 
     #[test]
     fn test_claude_unicode_null_passthrough() {

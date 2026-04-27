@@ -12,20 +12,8 @@
 #   2           Deny rule matched → pass through (Claude Code native deny handles it)
 #   3 + stdout  Ask rule matched → rewrite but let Claude Code prompt the user
 
-# --- Audit logging (opt-in via RTK_HOOK_AUDIT=1) ---
-_rtk_audit_log() {
-  if [ "${RTK_HOOK_AUDIT:-0}" != "1" ]; then return; fi
-  local action="$1" original="$2" rewritten="${3:--}"
-  local dir="${RTK_AUDIT_DIR:-${HOME}/.local/share/rtk}"
-  mkdir -p "$dir"
-  printf '%s | %s | %s | %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$action" "$original" "$rewritten" \
-    >> "${dir}/hook-audit.log"
-}
-
 # Guards: skip silently if dependencies missing
 if ! command -v rtk &>/dev/null || ! command -v jq &>/dev/null; then
-  _rtk_audit_log "skip:no_deps" "-"
   exit 0
 fi
 
@@ -35,13 +23,12 @@ INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
 if [ -z "$CMD" ]; then
-  _rtk_audit_log "skip:empty" "-"
   exit 0
 fi
 
 # Skip heredocs (rtk rewrite also skips them, but bail early)
 case "$CMD" in
-  *'<<'*) _rtk_audit_log "skip:heredoc" "$CMD"; exit 0 ;;
+  *'<<'*) exit 0 ;;
 esac
 
 # Rewrite via rtk — single source of truth for all command mappings and permission checks.
@@ -53,18 +40,15 @@ case $EXIT_CODE in
   0)
     # Rewrite found, no permission rules matched — safe to auto-allow.
     if [ "$CMD" = "$REWRITTEN" ]; then
-      _rtk_audit_log "skip:already_rtk" "$CMD"
       exit 0
     fi
     ;;
   1)
     # No RTK equivalent — pass through unchanged.
-    _rtk_audit_log "skip:no_match" "$CMD"
     exit 0
     ;;
   2)
     # Deny rule matched — let Claude Code's native deny rule handle it.
-    _rtk_audit_log "skip:deny_rule" "$CMD"
     exit 0
     ;;
   3)
@@ -75,8 +59,6 @@ case $EXIT_CODE in
     exit 0
     ;;
 esac
-
-_rtk_audit_log "rewrite" "$CMD" "$REWRITTEN"
 
 # Build the updated tool_input with all original fields preserved, only command changed.
 ORIGINAL_INPUT=$(echo "$INPUT" | jq -c '.tool_input')

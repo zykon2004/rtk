@@ -54,7 +54,6 @@ exclude_commands = []       # commands to never auto-rewrite
 |----------|-------------|
 | `RTK_DISABLED=1` | Disable RTK for a single command (`RTK_DISABLED=1 git status`) |
 | `RTK_TEE_DIR` | Override the tee directory |
-| `RTK_HOOK_AUDIT=1` | Enable hook audit logging |
 | `SKIP_ENV_VALIDATION=1` | Skip env validation (useful with Next.js) |
 
 ## Tee system

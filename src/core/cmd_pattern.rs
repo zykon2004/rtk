@@ -495,6 +495,11 @@ fn token_passes_guard(tok: &str) -> bool {
     if tok.is_empty() || tok.len() > MAX_TOKEN_LEN {
         return false;
     }
+    // ASCII-only: keeps the stored cmd_pattern panic-safe for byte-slice
+    // truncation downstream and avoids stashing user-language fragments.
+    if !tok.is_ascii() {
+        return false;
+    }
     if tok.starts_with('/')
         || tok.starts_with('~')
         || tok.starts_with("./")
@@ -526,6 +531,12 @@ fn token_passes_guard(tok: &str) -> bool {
 
 /// Normalize the leftmost segment's first token: strip any absolute path,
 /// lowercase it. Returns `None` for empty input.
+///
+/// Defense-in-depth: rejects any `=` in the candidate. If `strip_env_prefix`
+/// failed to peel a `name=value` assignment (unusual chars in the name, etc.),
+/// we refuse to use it as the cmd_pattern rather than persist the value.
+/// Same for non-ASCII bytes — `cmd_pattern` is byte-sliced downstream and we
+/// need the panic-free guarantee that the stored string is ASCII.
 fn normalize_cmd_name(tok: &str) -> Option<String> {
     if tok.is_empty() {
         return None;
@@ -538,7 +549,7 @@ fn normalize_cmd_name(tok: &str) -> Option<String> {
     } else {
         tok
     };
-    if candidate.is_empty() {
+    if candidate.is_empty() || candidate.contains('=') || !candidate.is_ascii() {
         return None;
     }
     Some(candidate.to_ascii_lowercase())
@@ -937,6 +948,58 @@ mod tests {
             p("AWS_ACCESS_KEY_ID=AKIA1234 AWS_SECRET_ACCESS_KEY=verysecret aws s3 ls"),
             "aws s3 ls"
         );
+    }
+
+    #[test]
+    fn lowercase_env_assignment_does_not_leak() {
+        // bash/sh accept lowercase env assignments; the regex must strip them so
+        // the value never becomes the apparent command name.
+        assert_eq!(p("token=secret aws s3 ls"), "aws s3 ls");
+        assert_eq!(p("password=hunter2 git status"), "git status");
+        assert_eq!(p("apiKey=AKIA1234 cargo test"), "cargo test");
+    }
+
+    #[test]
+    fn equals_in_cmd_name_falls_back_to_unknown() {
+        // Defense-in-depth: if env stripping somehow leaves an `=` in token 0
+        // (e.g. unusual chars in the var name), refuse to persist it.
+        assert_eq!(p("weird.var=secret aws s3 ls"), "unknown");
+        assert_eq!(p("=just-equals foo"), "unknown");
+    }
+
+    #[test]
+    fn non_ascii_cmd_name_falls_back_to_unknown() {
+        // cmd_pattern is byte-sliced downstream; non-ASCII would risk a panic
+        // and isn't useful as a sanitized identifier anyway.
+        assert_eq!(p("日本語 status"), "unknown");
+        assert_eq!(p("café build"), "unknown");
+    }
+
+    #[test]
+    fn non_ascii_subcommand_token_dropped() {
+        // Captured subcommand tokens are also held to ASCII so the joined
+        // pattern never contains multi-byte chars.
+        assert_eq!(p("git 日本語"), "git");
+        assert_eq!(p("cargo café"), "cargo");
+    }
+
+    #[test]
+    fn cmd_pattern_is_always_ascii() {
+        // Belt-and-suspenders: across a representative sample, the produced
+        // pattern is guaranteed ASCII so byte-slice truncation cannot panic.
+        let inputs = &[
+            "git status",
+            "日本語 build",
+            "git 日本語 status",
+            "cargo test --target x86_64",
+            "AWS_KEY=deadbeefcafe aws s3 ls",
+            "token=secret cmd",
+            "café noir",
+        ];
+        for input in inputs {
+            let r = build_cmd_pattern(input);
+            assert!(r.is_ascii(), "non-ASCII pattern from {:?}: {:?}", input, r);
+        }
     }
 
     #[test]

@@ -233,11 +233,7 @@ pub fn run(
                 println!("──────────────────────────────────────────────────────────");
                 for rec in recent {
                     let time = rec.timestamp.with_timezone(&Local).format("%m-%d %H:%M");
-                    let cmd_short = if rec.cmd_pattern.len() > 25 {
-                        format!("{}...", &rec.cmd_pattern[..22])
-                    } else {
-                        rec.cmd_pattern.clone()
-                    };
+                    let cmd_short = truncate_to(&rec.cmd_pattern, 25);
                     // added: tier indicators by savings level
                     let sign = if rec.savings_pct >= 70.0 {
                         "▲"
@@ -625,6 +621,17 @@ fn export_csv(
 /// Lightweight scan of recent Claude Code sessions for RTK_DISABLED= overuse.
 /// Returns a warning string if bypass rate exceeds 10%, None otherwise.
 /// Silently returns None on any error (missing dirs, permission issues, etc.).
+/// Truncate a string to `max_chars` chars (not bytes), appending `...` when shortened.
+/// Char-safe so multi-byte UTF-8 in `cmd_pattern` cannot panic the renderer.
+fn truncate_to(s: &str, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        let kept: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{}...", kept)
+    } else {
+        s.to_string()
+    }
+}
+
 fn check_rtk_disabled_bypass() -> Option<String> {
     use crate::discover::provider::{ClaudeProvider, SessionProvider};
     use crate::discover::registry::has_rtk_disabled_prefix;
@@ -694,11 +701,7 @@ fn show_failures(tracker: &Tracker) -> Result<()> {
         println!("{}", styled("Top Commands (by frequency)", true));
         println!("{}", "─".repeat(60));
         for (cmd, count) in &summary.top_commands {
-            let cmd_display = if cmd.len() > 50 {
-                format!("{}...", &cmd[..47])
-            } else {
-                cmd.clone()
-            };
+            let cmd_display = truncate_to(cmd, 50);
             println!("  {:>4}x  {}", count, cmd_display);
         }
         println!();
@@ -714,11 +717,7 @@ fn show_failures(tracker: &Tracker) -> Result<()> {
                 &rec.timestamp
             };
             let status = if rec.fallback_succeeded { "ok" } else { "FAIL" };
-            let cmd_display = if rec.cmd_pattern.len() > 40 {
-                format!("{}...", &rec.cmd_pattern[..37])
-            } else {
-                rec.cmd_pattern.clone()
-            };
+            let cmd_display = truncate_to(&rec.cmd_pattern, 40);
             println!("  {} [{}] {}", ts_short, status, cmd_display);
         }
         println!();

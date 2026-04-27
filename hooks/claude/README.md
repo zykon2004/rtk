@@ -18,7 +18,4 @@ bash hooks/test-rtk-rewrite.sh
 
 # Test against a specific hook path
 HOOK=/path/to/rtk-rewrite.sh bash hooks/test-rtk-rewrite.sh
-
-# Enable audit logging during testing
-RTK_HOOK_AUDIT=1 RTK_AUDIT_DIR=/tmp bash hooks/test-rtk-rewrite.sh
 ```
