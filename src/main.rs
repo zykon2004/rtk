@@ -1158,9 +1158,13 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                 } else {
                     stdout_raw.to_string()
                 };
-                // Tee raw output BEFORE filtering on failure — lets LLM re-read if needed
+                // Tee raw output BEFORE filtering on failure — lets LLM re-read if needed.
+                // Use the sanitized command pattern (not raw_command) for the tee
+                // filename slug so the file name on disk never carries paths or
+                // identifiers from the original argv.
                 let tee_hint = if !output.status.success() {
-                    core::tee::tee_and_hint(&combined_raw, &raw_command, exit_code)
+                    let slug = core::cmd_pattern::build_cmd_pattern(&raw_command);
+                    core::tee::tee_and_hint(&combined_raw, &slug, exit_code)
                 } else {
                     None
                 };
@@ -1171,12 +1175,8 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
                     println!("{}", hint);
                 }
 
-                timer.track(
-                    &raw_command,
-                    &format!("rtk:toml {}", raw_command),
-                    &combined_raw,
-                    &filtered,
-                );
+                // Second arg is unused at storage; tracking atomizes raw_command internally.
+                timer.track(&raw_command, "", &combined_raw, &filtered);
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 
                 Ok(exit_code)
@@ -1199,7 +1199,9 @@ fn run_fallback(parse_error: clap::Error) -> Result<i32> {
 
         match status {
             Ok(s) => {
-                timer.track_passthrough(&raw_command, &format!("rtk fallback: {}", raw_command));
+                // Second arg is unused at storage; the is_passthrough=true flag
+                // (set inside track_passthrough) replaces the legacy "rtk fallback:" prefix.
+                timer.track_passthrough(&raw_command, "");
 
                 core::tracking::record_parse_failure_silent(&raw_command, &error_message, true);
 

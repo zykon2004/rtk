@@ -58,6 +58,16 @@ lazy_static! {
         let env_assign = format!(r#"[A-Z_][A-Z0-9_]*={}"#, env_value);
         Regex::new(&format!(r#"^(?:sudo\s+|env\s+|{}\s+)+"#, env_assign)).unwrap()
     };
+}
+
+/// Strip leading env prefixes (`sudo`, `env VAR=val`, `VAR=val`) from a command line.
+/// Single source of truth for env-prefix handling shared between classification and
+/// privacy-sanitization paths.
+pub fn strip_env_prefix(s: &str) -> std::borrow::Cow<'_, str> {
+    ENV_PREFIX.replace(s, "")
+}
+
+lazy_static! {
     // Git global options that appear before the subcommand: -C <path>, -c <key=val>,
     // --git-dir <dir>, --work-tree <dir>, and flag-only options (#163)
     static ref GIT_GLOBAL_OPT: Regex =
@@ -105,7 +115,7 @@ pub fn classify_command(cmd: &str) -> Classification {
     }
 
     // Strip env prefixes (sudo, env VAR=val, VAR=val)
-    let stripped = ENV_PREFIX.replace(trimmed, "");
+    let stripped = strip_env_prefix(trimmed);
     let cmd_clean = stripped.trim();
     if cmd_clean.is_empty() {
         return Classification::Ignored;

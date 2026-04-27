@@ -27,15 +27,28 @@
 //! println!("Saved {} tokens", summary.total_saved);
 //! ```
 //!
+//! # Privacy
+//!
+//! The raw command line is **never** persisted. `Tracker::record` and
+//! `record_parse_failure` both pass their input through `build_cmd_pattern`
+//! before storage; only an aggregate, paths-and-identifiers-stripped
+//! `cmd_pattern` (e.g. `git status`, `npm run`, `aws s3 ls`) reaches disk.
+//!
 //! See [docs/tracking.md](../docs/tracking.md) for full documentation.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+use super::cmd_pattern::build_cmd_pattern;
+
+/// Schema version — bumped when persisted columns change in a privacy-relevant way.
+/// `Tracker::new()` rebuilds the DB from scratch when `PRAGMA user_version` is below this.
+const SCHEMA_VERSION: i32 = 1;
 
 // ── Project path helpers ── // added: project-scoped tracking support
 
@@ -82,7 +95,7 @@ use super::constants::{DEFAULT_HISTORY_DAYS, HISTORY_DB, RTK_DATA_DIR};
 /// use rtk::tracking::Tracker;
 ///
 /// let tracker = Tracker::new()?;
-/// tracker.record("ls -la", "rtk ls", 1000, 200, 50)?;
+/// tracker.record("ls -la", false, 1000, 200, 50)?;
 ///
 /// let summary = tracker.get_summary()?;
 /// println!("Total saved: {} tokens", summary.total_saved);
@@ -94,13 +107,20 @@ pub struct Tracker {
 
 /// Individual command record from tracking history.
 ///
-/// Contains timestamp, command name, and savings metrics for a single execution.
+/// Contains timestamp, sanitized command pattern, and savings metrics for a
+/// single execution. The pattern is derived from the raw command line by
+/// `build_cmd_pattern` and never contains file paths, identifiers, or secrets.
 #[derive(Debug)]
 pub struct CommandRecord {
     /// UTC timestamp when command was executed
     pub timestamp: DateTime<Utc>,
-    /// RTK command that was executed (e.g., "rtk ls")
-    pub rtk_cmd: String,
+    /// Sanitized command pattern (e.g., "git status", "npm run", "aws s3 ls")
+    pub cmd_pattern: String,
+    /// `true` if the command went through the passthrough fallback path.
+    /// Currently used in tests; reserved for future renderer use (e.g. tagging
+    /// passthrough rows in `rtk gain --history`).
+    #[allow(dead_code)]
+    pub is_passthrough: bool,
     /// Number of tokens saved (input - output)
     pub saved_tokens: usize,
     /// Savings percentage ((saved / input) * 100)
@@ -252,6 +272,17 @@ impl Tracker {
             std::fs::create_dir_all(parent)?;
         }
 
+        // Privacy migration: if the existing DB predates the cmd_pattern schema,
+        // rebuild it from scratch. The legacy DB contained raw command lines;
+        // we explicitly forfeit that history rather than try to redact it
+        // (legacy plaintext can also linger in WAL/SHM sidecar files).
+        if db_path.exists() {
+            let current = read_user_version(&db_path).unwrap_or(0);
+            if current < SCHEMA_VERSION {
+                migrate_to_v1(&db_path).context("Privacy migration of tracking DB failed")?;
+            }
+        }
+
         let conn = Connection::open(&db_path)?;
         // WAL mode + busy_timeout for concurrent access (multiple Claude Code instances).
         // Non-fatal: NFS/read-only filesystems may not support WAL.
@@ -259,69 +290,16 @@ impl Tracker {
             "PRAGMA journal_mode=WAL;
              PRAGMA busy_timeout=5000;",
         );
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS commands (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                original_cmd TEXT NOT NULL,
-                rtk_cmd TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                saved_tokens INTEGER NOT NULL,
-                savings_pct REAL NOT NULL
-            )",
-            [],
-        )?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_timestamp ON commands(timestamp)",
-            [],
-        )?;
+        create_tables_v1(&conn)?;
 
-        // Migration: add exec_time_ms column if it doesn't exist
-        let _ = conn.execute(
-            "ALTER TABLE commands ADD COLUMN exec_time_ms INTEGER DEFAULT 0",
-            [],
-        );
-        // Migration: add project_path column with DEFAULT '' for new rows // changed: added DEFAULT
-        let _ = conn.execute(
-            "ALTER TABLE commands ADD COLUMN project_path TEXT DEFAULT ''",
-            [],
-        );
-        // One-time migration: normalize NULLs from pre-default schema // changed: guarded with EXISTS
-        let has_nulls: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM commands WHERE project_path IS NULL)",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if has_nulls {
-            let _ = conn.execute(
-                "UPDATE commands SET project_path = '' WHERE project_path IS NULL",
-                [],
-            );
+        // Stamp the schema version. Idempotent.
+        let v: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
+        if v < SCHEMA_VERSION {
+            conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))?;
         }
-        // Index for fast project-scoped gain queries // added
-        let _ = conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
-            [],
-        );
-
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS parse_failures (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                raw_command TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                fallback_succeeded INTEGER NOT NULL DEFAULT 0
-            )",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
-            [],
-        )?;
 
         Ok(Self { conn })
     }
@@ -333,11 +311,14 @@ impl Tracker {
     ///
     /// # Arguments
     ///
-    /// - `original_cmd`: The standard command (e.g., "ls -la")
-    /// - `rtk_cmd`: The RTK command used (e.g., "rtk ls")
+    /// - `raw_command`: The original command line (sanitized before storage)
+    /// - `is_passthrough`: `true` if the command went through the fallback path
     /// - `input_tokens`: Estimated tokens from standard command output
     /// - `output_tokens`: Actual tokens from RTK output
     /// - `exec_time_ms`: Execution time in milliseconds
+    ///
+    /// `raw_command` is sanitized via `build_cmd_pattern` before storage — the
+    /// raw text never reaches disk.
     ///
     /// # Examples
     ///
@@ -345,13 +326,13 @@ impl Tracker {
     /// use rtk::tracking::Tracker;
     ///
     /// let tracker = Tracker::new()?;
-    /// tracker.record("ls -la", "rtk ls", 1000, 200, 50)?;
+    /// tracker.record("ls -la", false, 1000, 200, 50)?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn record(
         &self,
-        original_cmd: &str,
-        rtk_cmd: &str,
+        raw_command: &str,
+        is_passthrough: bool,
         input_tokens: usize,
         output_tokens: usize,
         exec_time_ms: u64,
@@ -363,16 +344,17 @@ impl Tracker {
             0.0
         };
 
-        let project_path = current_project_path_string(); // added: record cwd
+        let project_path = current_project_path_string();
+        let cmd_pattern = build_cmd_pattern(raw_command);
 
         self.conn.execute(
-            "INSERT INTO commands (timestamp, original_cmd, rtk_cmd, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", // added: project_path
+            "INSERT INTO commands (timestamp, cmd_pattern, is_passthrough, project_path, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 Utc::now().to_rfc3339(),
-                original_cmd,
-                rtk_cmd,
-                project_path, // added
+                cmd_pattern,
+                is_passthrough as i32,
+                project_path,
                 input_tokens as i64,
                 output_tokens as i64,
                 saved as i64,
@@ -399,18 +381,21 @@ impl Tracker {
     }
 
     /// Record a parse failure for analytics.
+    ///
+    /// `raw_command` is sanitized via `build_cmd_pattern` before storage.
     pub fn record_parse_failure(
         &self,
         raw_command: &str,
         error_message: &str,
         fallback_succeeded: bool,
     ) -> Result<()> {
+        let cmd_pattern = build_cmd_pattern(raw_command);
         self.conn.execute(
-            "INSERT INTO parse_failures (timestamp, raw_command, error_message, fallback_succeeded)
+            "INSERT INTO parse_failures (timestamp, cmd_pattern, error_message, fallback_succeeded)
              VALUES (?1, ?2, ?3, ?4)",
             params![
                 Utc::now().to_rfc3339(),
-                raw_command,
+                cmd_pattern,
                 error_message,
                 fallback_succeeded as i32,
             ],
@@ -439,9 +424,9 @@ impl Tracker {
 
         // Top commands by frequency
         let mut stmt = self.conn.prepare(
-            "SELECT raw_command, COUNT(*) as cnt
+            "SELECT cmd_pattern, COUNT(*) as cnt
              FROM parse_failures
-             GROUP BY raw_command
+             GROUP BY cmd_pattern
              ORDER BY cnt DESC
              LIMIT 10",
         )?;
@@ -453,7 +438,7 @@ impl Tracker {
 
         // Recent 10
         let mut stmt = self.conn.prepare(
-            "SELECT timestamp, raw_command, error_message, fallback_succeeded
+            "SELECT timestamp, cmd_pattern, error_message, fallback_succeeded
              FROM parse_failures
              ORDER BY timestamp DESC
              LIMIT 10",
@@ -462,7 +447,7 @@ impl Tracker {
             .query_map([], |row| {
                 Ok(ParseFailureRecord {
                     timestamp: row.get(0)?,
-                    raw_command: row.get(1)?,
+                    cmd_pattern: row.get(1)?,
                     error_message: row.get(2)?,
                     fallback_succeeded: row.get::<_, i32>(3)? != 0,
                 })
@@ -572,10 +557,10 @@ impl Tracker {
     ) -> Result<Vec<CommandStats>> {
         let (project_exact, project_glob) = project_filter_params(project_path); // added
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, COUNT(*), SUM(saved_tokens), AVG(savings_pct), AVG(exec_time_ms)
+            "SELECT cmd_pattern, COUNT(*), SUM(saved_tokens), AVG(savings_pct), AVG(exec_time_ms)
              FROM commands
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
-             GROUP BY rtk_cmd
+             GROUP BY cmd_pattern
              ORDER BY SUM(saved_tokens) DESC
              LIMIT 10", // added: project filter in WHERE
         )?;
@@ -856,7 +841,7 @@ impl Tracker {
     /// let recent = tracker.get_recent(10)?;
     /// for cmd in recent {
     ///     println!("{}: {} saved {:.1}%",
-    ///         cmd.timestamp, cmd.rtk_cmd, cmd.savings_pct);
+    ///         cmd.timestamp, cmd.cmd_pattern, cmd.savings_pct);
     /// }
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -873,7 +858,7 @@ impl Tracker {
     ) -> Result<Vec<CommandRecord>> {
         let (project_exact, project_glob) = project_filter_params(project_path); // added
         let mut stmt = self.conn.prepare(
-            "SELECT timestamp, rtk_cmd, saved_tokens, savings_pct
+            "SELECT timestamp, cmd_pattern, is_passthrough, saved_tokens, savings_pct
              FROM commands
              WHERE (?1 IS NULL OR project_path = ?1 OR project_path GLOB ?2)
              ORDER BY timestamp DESC
@@ -887,9 +872,10 @@ impl Tracker {
                     timestamp: DateTime::parse_from_rfc3339(&row.get::<_, String>(0)?)
                         .map(|dt| dt.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
-                    rtk_cmd: row.get(1)?,
-                    saved_tokens: row.get::<_, i64>(2)? as usize,
-                    savings_pct: row.get(3)?,
+                    cmd_pattern: row.get(1)?,
+                    is_passthrough: row.get::<_, i32>(2)? != 0,
+                    saved_tokens: row.get::<_, i64>(3)? as usize,
+                    savings_pct: row.get(4)?,
                 })
             },
         )?;
@@ -911,13 +897,13 @@ impl Tracker {
     /// Get top N commands by frequency.
     pub fn top_commands(&self, limit: usize) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, COUNT(*) as cnt FROM commands
-             GROUP BY rtk_cmd ORDER BY cnt DESC LIMIT ?1",
+            "SELECT cmd_pattern, COUNT(*) as cnt FROM commands
+             GROUP BY cmd_pattern ORDER BY cnt DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let cmd: String = row.get(0)?;
-            // Extract just the command name (e.g. "rtk git status" → "git")
-            Ok(cmd.split_whitespace().nth(1).unwrap_or(&cmd).to_string())
+            // Extract just the command name (e.g. "git status" → "git")
+            Ok(cmd.split_whitespace().next().unwrap_or(&cmd).to_string())
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -957,13 +943,13 @@ impl Tracker {
         Ok(saved)
     }
 
-    /// Top N passthrough commands (0% savings) — commands missing a filter.
-    /// Groups by first word only.
+    /// Top N passthrough commands — commands routed through the fallback path.
+    /// Groups by first token of the sanitized command pattern.
     pub fn top_passthrough(&self, limit: usize) -> Result<Vec<(String, i64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT TRIM(SUBSTR(original_cmd, 1, INSTR(original_cmd || ' ', ' ') - 1)) as tool,
+            "SELECT TRIM(SUBSTR(cmd_pattern, 1, INSTR(cmd_pattern || ' ', ' ') - 1)) as tool,
              COUNT(*) as cnt FROM commands
-             WHERE input_tokens = 0 AND output_tokens = 0
+             WHERE is_passthrough = 1
              GROUP BY tool ORDER BY cnt DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
@@ -988,17 +974,16 @@ impl Tracker {
     /// Count commands with low savings (<30%) — filters that need improvement.
     pub fn low_savings_commands(&self, limit: usize) -> Result<Vec<(String, f64)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, AVG(savings_pct) as avg_sav FROM commands
+            "SELECT cmd_pattern, AVG(savings_pct) as avg_sav FROM commands
              WHERE input_tokens > 0
-             GROUP BY rtk_cmd
+             GROUP BY cmd_pattern
              HAVING avg_sav < 30.0 AND avg_sav > 0.0
              ORDER BY COUNT(*) DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let cmd: String = row.get(0)?;
             let sav: f64 = row.get(1)?;
-            let short = cmd.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
-            Ok((short, sav))
+            Ok((cmd, sav))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
@@ -1007,9 +992,9 @@ impl Tracker {
     pub fn avg_savings_per_command(&self) -> Result<f64> {
         let avg: f64 = self.conn.query_row(
             "SELECT COALESCE(AVG(avg_sav), 0.0) FROM (
-                SELECT rtk_cmd, AVG(savings_pct) as avg_sav
+                SELECT cmd_pattern, AVG(savings_pct) as avg_sav
                 FROM commands WHERE input_tokens > 0
-                GROUP BY rtk_cmd
+                GROUP BY cmd_pattern
             )",
             [],
             |row| row.get(0),
@@ -1017,12 +1002,16 @@ impl Tracker {
         Ok(avg)
     }
 
-    /// Count invocations of a specific meta-command (by rtk_cmd suffix).
+    /// Count invocations of a specific meta-command (e.g. "gain", "discover").
+    /// Matches rows whose `cmd_pattern` starts with the literal `rtk <name>`.
     pub fn count_meta_command(&self, name: &str) -> Result<i64> {
-        let pattern = format!("rtk {}", name);
+        // cmd_pattern's first token is the binary name. RTK records its own meta
+        // commands as `rtk <subcmd>`; we filter by that prefix.
+        let exact = format!("rtk {}", name);
+        let prefix = format!("rtk {} ", name);
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM commands WHERE rtk_cmd LIKE ?1 || '%'",
-            params![pattern],
+            "SELECT COUNT(*) FROM commands WHERE cmd_pattern = ?1 OR cmd_pattern LIKE ?2 || '%'",
+            params![exact, prefix],
             |row| row.get(0),
         )?;
         Ok(count)
@@ -1084,9 +1073,9 @@ impl Tracker {
             return Ok(vec![]);
         }
         let mut stmt = self.conn.prepare(
-            "SELECT rtk_cmd, COUNT(*) as cnt FROM commands
+            "SELECT cmd_pattern, COUNT(*) as cnt FROM commands
              WHERE input_tokens > 0 AND timestamp >= datetime('now', '-90 days')
-             GROUP BY rtk_cmd ORDER BY cnt DESC",
+             GROUP BY cmd_pattern ORDER BY cnt DESC",
         )?;
         let mut categories: std::collections::HashMap<String, f64> =
             std::collections::HashMap::new();
@@ -1132,10 +1121,10 @@ impl Tracker {
     }
 }
 
-/// Map an rtk_cmd to an ecosystem category.
-fn categorize_command(rtk_cmd: &str) -> String {
-    let parts: Vec<&str> = rtk_cmd.split_whitespace().collect();
-    let tool = parts.get(1).copied().unwrap_or("other");
+/// Map a sanitized cmd_pattern to an ecosystem category.
+fn categorize_command(cmd_pattern: &str) -> String {
+    // cmd_pattern always starts with the tool name (e.g. "git status", "npm run").
+    let tool = cmd_pattern.split_whitespace().next().unwrap_or("other");
     match tool {
         "git" | "gh" | "gt" => "git",
         "cargo" => "cargo",
@@ -1151,6 +1140,149 @@ fn categorize_command(rtk_cmd: &str) -> String {
         _ => "other",
     }
     .to_string()
+}
+
+/// Read `PRAGMA user_version` without taking a write lock or modifying the file.
+fn read_user_version(path: &Path) -> Result<i32> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("Failed to open DB read-only: {}", path.display()))?;
+    Ok(conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0))
+}
+
+/// Create the v1 schema in an open connection if not already present. Idempotent.
+fn create_tables_v1(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            cmd_pattern TEXT NOT NULL,
+            is_passthrough INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            saved_tokens INTEGER NOT NULL,
+            savings_pct REAL NOT NULL,
+            exec_time_ms INTEGER NOT NULL DEFAULT 0,
+            project_path TEXT NOT NULL DEFAULT ''
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timestamp ON commands(timestamp)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cmd_pattern ON commands(cmd_pattern)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS parse_failures (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            cmd_pattern TEXT NOT NULL,
+            error_message TEXT NOT NULL,
+            fallback_succeeded INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Replace a legacy DB with a fresh v1 DB. The old contents — including raw
+/// command lines that lingered in WAL/SHM sidecars — are forfeited, not migrated.
+///
+/// Strategy: build a fresh DB at a temp path, then atomically rename over the
+/// existing one. On Unix this is fully atomic; on Windows we fall back to a
+/// best-effort remove-and-rename if `MOVEFILE_REPLACE_EXISTING` is refused.
+fn migrate_to_v1(db_path: &Path) -> Result<()> {
+    let parent = db_path
+        .parent()
+        .context("DB path has no parent directory")?;
+
+    let tmp_path = parent.join(format!("history.db.migrating-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp_path);
+
+    {
+        let conn = Connection::open(&tmp_path)
+            .with_context(|| format!("Failed to open temp DB: {}", tmp_path.display()))?;
+        // DELETE journal mode for the migration step so we never leave a WAL
+        // sidecar behind that could outlive the rename.
+        conn.execute_batch("PRAGMA journal_mode=DELETE;")?;
+        create_tables_v1(&conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version = {};", SCHEMA_VERSION))?;
+    }
+
+    if let Err(e) = std::fs::rename(&tmp_path, db_path) {
+        #[cfg(windows)]
+        {
+            // Windows can refuse atomic replace under specific ACL/lock conditions.
+            // Best-effort fallback: remove the destination and retry.
+            let _ = std::fs::remove_file(db_path);
+            std::fs::rename(&tmp_path, db_path).with_context(|| {
+                format!("Windows fallback rename failed (after first error: {e})")
+            })?;
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(
+                anyhow::Error::new(e).context("Atomic rename failed during privacy migration")
+            );
+        }
+    }
+
+    // Drop legacy WAL/SHM sidecars so plaintext from the old DB does not linger.
+    let _ = std::fs::remove_file(parent.join("history.db-wal"));
+    let _ = std::fs::remove_file(parent.join("history.db-shm"));
+
+    Ok(())
+}
+
+/// Filename of the one-time announce sidecar (sits next to the tracking DB).
+const ANNOUNCE_SIDECAR: &str = ".privacy_migration_announced_v1";
+
+/// One-time user-facing migration notice.
+///
+/// Call this from `rtk gain`, `rtk init`, and `rtk verify` (user-facing entry
+/// points only — never from the silent Bash-hook rewrite path). Prints once
+/// per DB, recording acknowledgement via a sibling sidecar file.
+///
+/// Errors are swallowed: the notice is best-effort.
+pub fn print_privacy_migration_notice_if_needed() {
+    let db_path = match get_db_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let parent = match db_path.parent() {
+        Some(p) => p,
+        None => return,
+    };
+    if !db_path.exists() {
+        return; // No DB yet -> nothing to announce.
+    }
+    let sidecar = parent.join(ANNOUNCE_SIDECAR);
+    if sidecar.exists() {
+        return;
+    }
+    // Only announce if the schema is at the privacy version (i.e. migration
+    // either ran on this DB or it was created fresh under v1).
+    let version = read_user_version(&db_path).unwrap_or(0);
+    if version < SCHEMA_VERSION {
+        return;
+    }
+    eprintln!(
+        "rtk: privacy migration v1 applied — pre-existing tracking data was wiped (history.db rebuilt with sanitized command patterns)."
+    );
+    let _ = std::fs::write(&sidecar, b"v1\n");
 }
 
 fn get_db_path() -> Result<PathBuf> {
@@ -1175,7 +1307,8 @@ fn get_db_path() -> Result<PathBuf> {
 #[derive(Debug)]
 pub struct ParseFailureRecord {
     pub timestamp: String,
-    pub raw_command: String,
+    /// Sanitized command pattern (built from the raw command via `build_cmd_pattern`).
+    pub cmd_pattern: String,
     #[allow(dead_code)]
     pub error_message: String,
     pub fallback_succeeded: bool,
@@ -1289,19 +1422,17 @@ impl TimedExecution {
     /// let output = "short output";
     /// timer.track("ls -la", "rtk ls", input, output);
     /// ```
-    pub fn track(&self, original_cmd: &str, rtk_cmd: &str, input: &str, output: &str) {
+    pub fn track(&self, original_cmd: &str, _rtk_cmd: &str, input: &str, output: &str) {
+        // _rtk_cmd is intentionally unused: the storage layer atomizes
+        // `original_cmd` into a privacy-safe `cmd_pattern` and persists nothing
+        // else from the caller. Kept in the signature to avoid touching ~80
+        // call sites until a future refactor.
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
         let input_tokens = estimate_tokens(input);
         let output_tokens = estimate_tokens(output);
 
         if let Ok(tracker) = Tracker::new() {
-            let _ = tracker.record(
-                original_cmd,
-                rtk_cmd,
-                input_tokens,
-                output_tokens,
-                elapsed_ms,
-            );
+            let _ = tracker.record(original_cmd, false, input_tokens, output_tokens, elapsed_ms);
         }
     }
 
@@ -1325,11 +1456,13 @@ impl TimedExecution {
     /// // ... execute streaming command ...
     /// timer.track_passthrough("git tag", "rtk git tag");
     /// ```
-    pub fn track_passthrough(&self, original_cmd: &str, rtk_cmd: &str) {
+    pub fn track_passthrough(&self, original_cmd: &str, _rtk_cmd: &str) {
+        // _rtk_cmd is intentionally unused — see `track` above for the
+        // explanation. The is_passthrough flag is the structured replacement
+        // for the legacy `"rtk fallback: ..."` prefix encoding.
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
-        // input_tokens=0, output_tokens=0 won't dilute savings statistics
         if let Ok(tracker) = Tracker::new() {
-            let _ = tracker.record(original_cmd, rtk_cmd, 0, 0, elapsed_ms);
+            let _ = tracker.record(original_cmd, true, 0, 0, elapsed_ms);
         }
     }
 }
@@ -1385,67 +1518,55 @@ mod tests {
     fn test_tracker_record_and_recent() {
         let tracker = Tracker::new().expect("Failed to create tracker");
 
-        // Use unique test identifier to avoid conflicts with other tests
-        let test_cmd = format!("rtk git status test_{}", std::process::id());
-
+        // Use a unique-ish raw command. After atomization the cmd_pattern
+        // collapses to "git status", so we assert on aggregate fields instead
+        // of trying to match a per-test marker.
         tracker
-            .record("git status", &test_cmd, 100, 20, 50)
+            .record("git status --short", false, 100, 20, 50)
             .expect("Failed to record");
 
         let recent = tracker.get_recent(10).expect("Failed to get recent");
 
-        // Find our specific test record
         let test_record = recent
             .iter()
-            .find(|r| r.rtk_cmd == test_cmd)
+            .find(|r| r.cmd_pattern == "git status" && r.saved_tokens == 80)
             .expect("Test record not found in recent commands");
 
-        assert_eq!(test_record.saved_tokens, 80);
         assert_eq!(test_record.savings_pct, 80.0);
+        assert!(!test_record.is_passthrough);
     }
 
-    // 4. track_passthrough doesn't dilute stats (input=0, output=0)
+    // 4. is_passthrough flag persists round-trip
     #[test]
-    fn test_track_passthrough_no_dilution() {
+    fn test_track_passthrough_flag_persists() {
         let tracker = Tracker::new().expect("Failed to create tracker");
 
-        // Use unique test identifiers
-        let pid = std::process::id();
-        let cmd1 = format!("rtk cmd1_test_{}", pid);
-        let cmd2 = format!("rtk cmd2_passthrough_test_{}", pid);
-
-        // Record one real command with 80% savings
+        // Tests share a DB, so we anchor assertions on the unique cmd_pattern
+        // that this test produces, not generic "first match" logic.
         tracker
-            .record("cmd1", &cmd1, 1000, 200, 10)
-            .expect("Failed to record cmd1");
+            .record("git log -10", false, 1000, 200, 10)
+            .expect("Failed to record git log");
 
-        // Record passthrough (0, 0)
         tracker
-            .record("cmd2", &cmd2, 0, 0, 5)
+            .record("git tag --list v1.*", true, 0, 0, 5)
             .expect("Failed to record passthrough");
 
-        // Verify both records exist in recent history
-        let recent = tracker.get_recent(20).expect("Failed to get recent");
+        let recent = tracker.get_recent(50).expect("Failed to get recent");
 
-        let record1 = recent
+        // Non-passthrough "git log" record with 80% savings
+        let filtered = recent
             .iter()
-            .find(|r| r.rtk_cmd == cmd1)
-            .expect("cmd1 record not found");
-        let record2 = recent
+            .find(|r| !r.is_passthrough && r.cmd_pattern == "git log" && r.saved_tokens == 800)
+            .expect("filtered git log record not found");
+        assert_eq!(filtered.savings_pct, 80.0);
+
+        // Passthrough "git tag" record with 0 tokens
+        let passthrough = recent
             .iter()
-            .find(|r| r.rtk_cmd == cmd2)
-            .expect("passthrough record not found");
-
-        // Verify cmd1 has 80% savings
-        assert_eq!(record1.saved_tokens, 800);
-        assert_eq!(record1.savings_pct, 80.0);
-
-        // Verify passthrough has 0% savings
-        assert_eq!(record2.saved_tokens, 0);
-        assert_eq!(record2.savings_pct, 0.0);
-
-        // This validates that passthrough (0 input, 0 output) doesn't dilute stats
-        // because the savings calculation is correct for both cases
+            .find(|r| r.is_passthrough && r.cmd_pattern == "git tag")
+            .expect("passthrough git tag record not found");
+        assert_eq!(passthrough.savings_pct, 0.0);
+        assert_eq!(passthrough.saved_tokens, 0);
     }
 
     // 5. TimedExecution::track records with exec_time > 0
@@ -1453,29 +1574,31 @@ mod tests {
     fn test_timed_execution_records_time() {
         let timer = TimedExecution::start();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        timer.track("test cmd", "rtk test", "raw input data", "filtered");
+        // The second arg is unused at the storage layer, but kept in the
+        // public signature for back-compat with ~80 call sites.
+        timer.track("git status", "rtk git status", "raw input data", "filtered");
 
-        // Verify via DB that record exists
         let tracker = Tracker::new().expect("Failed to create tracker");
         let recent = tracker.get_recent(5).expect("Failed to get recent");
-        assert!(recent.iter().any(|r| r.rtk_cmd == "rtk test"));
+        assert!(recent
+            .iter()
+            .any(|r| r.cmd_pattern == "git status" && !r.is_passthrough));
     }
 
-    // 6. TimedExecution::track_passthrough records with 0 tokens
+    // 6. TimedExecution::track_passthrough records with passthrough flag set
     #[test]
     fn test_timed_execution_passthrough() {
         let timer = TimedExecution::start();
-        timer.track_passthrough("git tag", "rtk git tag (passthrough)");
+        timer.track_passthrough("git tag --list", "rtk git tag");
 
         let tracker = Tracker::new().expect("Failed to create tracker");
         let recent = tracker.get_recent(5).expect("Failed to get recent");
 
         let pt = recent
             .iter()
-            .find(|r| r.rtk_cmd.contains("passthrough"))
+            .find(|r| r.is_passthrough && r.cmd_pattern == "git tag")
             .expect("Passthrough record not found");
 
-        // savings_pct should be 0 for passthrough
         assert_eq!(pt.savings_pct, 0.0);
         assert_eq!(pt.saved_tokens, 0);
     }
@@ -1548,10 +1671,12 @@ mod tests {
     #[test]
     fn test_parse_failure_roundtrip() {
         let tracker = Tracker::new().expect("Failed to create tracker");
-        let test_cmd = format!("git -C /path status test_{}", std::process::id());
 
+        // Raw command contains an absolute path; we assert that storage holds
+        // only the sanitized cmd_pattern, never the path.
+        let raw = format!("git -C /home/u/proj-{} status", std::process::id());
         tracker
-            .record_parse_failure(&test_cmd, "unrecognized subcommand", true)
+            .record_parse_failure(&raw, "unrecognized subcommand", true)
             .expect("Failed to record parse failure");
 
         let summary = tracker
@@ -1559,7 +1684,18 @@ mod tests {
             .expect("Failed to get summary");
 
         assert!(summary.total >= 1);
-        assert!(summary.recent.iter().any(|r| r.raw_command == test_cmd));
+        // Sanitization must have stripped the absolute path entirely.
+        for rec in &summary.recent {
+            assert!(
+                !rec.cmd_pattern.contains('/'),
+                "cmd_pattern leaked path: {}",
+                rec.cmd_pattern
+            );
+        }
+        assert!(summary
+            .recent
+            .iter()
+            .any(|r| r.cmd_pattern.starts_with("git")));
     }
 
     // 13. recovery_rate calculation

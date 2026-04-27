@@ -229,6 +229,9 @@ pub fn run(
     patch_mode: PatchMode,
     verbose: u8,
 ) -> Result<()> {
+    // One-time privacy-migration notice (no-op if already announced).
+    crate::core::tracking::print_privacy_migration_notice_if_needed();
+
     // Validation: Codex mode conflicts
     if codex {
         if install_opencode {
