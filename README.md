@@ -7,12 +7,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rtk-ai/rtk/actions"><img src="https://github.com/rtk-ai/rtk/workflows/Security%20Check/badge.svg" alt="CI"></a>
-  <a href="https://github.com/rtk-ai/rtk/releases"><img src="https://img.shields.io/github/v/release/rtk-ai/rtk" alt="Release"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://discord.gg/RySmvNF5kF"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord" alt="Discord"></a>
-  <a href="https://formulae.brew.sh/formula/rtk"><img src="https://img.shields.io/homebrew/v/rtk" alt="Homebrew"></a>
+  <img src="https://img.shields.io/badge/version-0.37.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/fork-zykon2004%2Frtk-orange" alt="Fork">
 </p>
+
+> **Fork notice:** this is a personal fork of [`rtk-ai/rtk`](https://github.com/rtk-ai/rtk). It tracks upstream `master` with two local changes: telemetry sending removed, and `install.sh` builds from source instead of downloading prebuilt binaries. No prebuilt releases or Homebrew tap are published from this fork.
 
 <p align="center">
   <a href="https://www.rtk-ai.app">Website</a> &bull;
@@ -20,15 +20,6 @@
   <a href="https://www.rtk-ai.app/guide/troubleshooting">Troubleshooting</a> &bull;
   <a href="ARCHITECTURE.md">Architecture</a> &bull;
   <a href="https://discord.gg/RySmvNF5kF">Discord</a>
-</p>
-
-<p align="center">
-  <a href="README.md">English</a> &bull;
-  <a href="README_fr.md">Francais</a> &bull;
-  <a href="README_zh.md">中文</a> &bull;
-  <a href="README_ja.md">日本語</a> &bull;
-  <a href="README_ko.md">한국어</a> &bull;
-  <a href="README_es.md">Espanol</a>
 </p>
 
 ---
@@ -57,19 +48,17 @@ rtk filters and compresses command outputs before they reach your LLM context. S
 
 ## Installation
 
-### Homebrew (recommended)
-
-```bash
-brew install rtk
-```
+This fork installs by **building from source**. Requires `git` and `cargo` (install Rust via [rustup.rs](https://rustup.rs)).
 
 ### Quick Install (Linux/macOS)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/zykon2004/rtk/refs/heads/master/install.sh | sh
 ```
 
-> Installs to `~/.local/bin`. Add to PATH if needed:
+The script clones this repo into a tempdir, runs `cargo build --release`, and installs the binary to `~/.local/bin/rtk`. Override location with `RTK_INSTALL_DIR`, branch with `RTK_REF`, or repo with `RTK_REPO_URL`.
+
+> Add `~/.local/bin` to PATH if needed:
 > ```bash
 > echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
 > ```
@@ -77,22 +66,21 @@ curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/instal
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/rtk-ai/rtk
+cargo install --git https://github.com/zykon2004/rtk
 ```
 
-### Pre-built Binaries
+### From a local clone
 
-Download from [releases](https://github.com/rtk-ai/rtk/releases):
-- macOS: `rtk-x86_64-apple-darwin.tar.gz` / `rtk-aarch64-apple-darwin.tar.gz`
-- Linux: `rtk-x86_64-unknown-linux-musl.tar.gz` / `rtk-aarch64-unknown-linux-gnu.tar.gz`
-- Windows: `rtk-x86_64-pc-windows-msvc.zip`
-
-> **Windows users**: Extract the zip and place `rtk.exe` somewhere in your PATH (e.g. `C:\Users\<you>\.local\bin`). Run RTK from **Command Prompt**, **PowerShell**, or **Windows Terminal** — do not double-click the `.exe` (it will flash and close). For the best experience, use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) where the full hook system works natively. See [Windows setup](#windows) below for details.
+```bash
+git clone https://github.com/zykon2004/rtk.git
+cd rtk
+cargo install --path .
+```
 
 ### Verify Installation
 
 ```bash
-rtk --version   # Should show "rtk 0.28.2"
+rtk --version   # Should show "rtk 0.37.2"
 rtk gain        # Should show token savings stats
 ```
 
@@ -320,21 +308,20 @@ RTK works on Windows with some limitations. The auto-rewrite hook (`rtk-rewrite.
 For the best experience, use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) (Windows Subsystem for Linux). Inside WSL, RTK works exactly like Linux — full hook support, auto-rewrite, everything:
 
 ```bash
-# Inside WSL
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+# Inside WSL — requires git + cargo
+curl -fsSL https://raw.githubusercontent.com/zykon2004/rtk/refs/heads/master/install.sh | sh
 rtk init -g
 ```
 
 ### Native Windows (limited support)
 
-On native Windows (cmd.exe / PowerShell), RTK filters work but the hook does not auto-rewrite commands:
+On native Windows (cmd.exe / PowerShell), RTK filters work but the hook does not auto-rewrite commands. This fork does not publish prebuilt Windows binaries — build from source via `cargo install --git https://github.com/zykon2004/rtk` (Rust required), then:
 
 ```powershell
-# 1. Download and extract rtk-x86_64-pc-windows-msvc.zip from releases
-# 2. Add rtk.exe to your PATH
-# 3. Initialize (falls back to CLAUDE.md injection)
+# 1. After cargo install, ensure %USERPROFILE%\.cargo\bin is in PATH
+# 2. Initialize (falls back to CLAUDE.md injection on native Windows)
 rtk init -g
-# 4. Use rtk explicitly
+# 3. Use rtk explicitly
 rtk cargo test
 rtk git status
 ```
@@ -396,8 +383,8 @@ For the full config reference (all sections, env vars, per-project filters), see
 
 ```bash
 rtk init -g --uninstall     # Remove hook, RTK.md, settings.json entry
-cargo uninstall rtk          # Remove binary
-brew uninstall rtk           # If installed via Homebrew
+cargo uninstall rtk          # If installed via cargo
+rm ~/.local/bin/rtk          # If installed via install.sh
 ```
 
 ## Documentation
@@ -410,7 +397,7 @@ brew uninstall rtk           # If installed via Homebrew
 
 ## Privacy
 
-RTK does not send telemetry or usage data to third-party services. Command history used by `rtk gain` and related analytics is stored locally in SQLite under the RTK data directory.
+This fork has the upstream telemetry-sending code removed (commit `d4c3a2a`). No usage data leaves your machine. Command history used by `rtk gain` and related analytics is stored locally in SQLite under the RTK data directory.
 
 ## Star History
 
@@ -443,9 +430,7 @@ RTK does not send telemetry or usage data to third-party services. Command histo
 
 ## Contributing
 
-Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/rtk-ai/rtk).
-
-Join the community on [Discord](https://discord.gg/RySmvNF5kF).
+This is a personal fork. For contributions to the project itself, open issues or PRs against [upstream `rtk-ai/rtk`](https://github.com/rtk-ai/rtk) and join the community on [Discord](https://discord.gg/RySmvNF5kF). Fork-specific changes (telemetry removal, source-based installer) belong on [zykon2004/rtk](https://github.com/zykon2004/rtk).
 
 ## License
 

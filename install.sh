@@ -1,12 +1,17 @@
 #!/usr/bin/env sh
-# rtk installer - https://github.com/rtk-ai/rtk
-# Usage: curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+# rtk installer - https://github.com/zykon2004/rtk
+# Builds rtk from source. Requires: git, cargo (https://rustup.rs).
+# Usage: curl -fsSL https://raw.githubusercontent.com/zykon2004/rtk/refs/heads/master/install.sh | sh
+#
+# Override repo or ref:
+#   RTK_REPO_URL=https://github.com/other/rtk.git RTK_REF=mybranch ./install.sh
 
 set -e
 
-REPO="rtk-ai/rtk"
+REPO_URL="${RTK_REPO_URL:-https://github.com/zykon2004/rtk.git}"
 BINARY_NAME="rtk"
 INSTALL_DIR="${RTK_INSTALL_DIR:-$HOME/.local/bin}"
+REF="${RTK_REF:-master}"
 
 # Colors
 RED='\033[0;31m'
@@ -27,94 +32,47 @@ error() {
     exit 1
 }
 
-# Detect OS
-detect_os() {
-    case "$(uname -s)" in
-        Linux*)  OS="linux";;
-        Darwin*) OS="darwin";;
-        *)       error "Unsupported operating system: $(uname -s)";;
-    esac
-}
-
-# Detect architecture
-detect_arch() {
-    case "$(uname -m)" in
-        x86_64|amd64)  ARCH="x86_64";;
-        arm64|aarch64) ARCH="aarch64";;
-        *)             error "Unsupported architecture: $(uname -m)";;
-    esac
-}
-
-# Get latest release version
-get_latest_version() {
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$VERSION" ]; then
-        error "Failed to get latest version"
+check_deps() {
+    if ! command -v git >/dev/null 2>&1; then
+        error "git is required but not installed."
+    fi
+    if ! command -v cargo >/dev/null 2>&1; then
+        error "cargo is required but not installed. Install Rust via https://rustup.rs"
     fi
 }
 
-# Build target triple
-get_target() {
-    case "$OS" in
-        linux)
-            case "$ARCH" in
-                x86_64)  TARGET="x86_64-unknown-linux-musl";;
-                aarch64) TARGET="aarch64-unknown-linux-gnu";;
-            esac
-            ;;
-        darwin)
-            TARGET="${ARCH}-apple-darwin"
-            ;;
-    esac
-}
-
-# Download and install
-install() {
-    info "Detected: $OS $ARCH"
-    info "Target: $TARGET"
-    info "Version: $VERSION"
-
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${TARGET}.tar.gz"
+build_and_install() {
     TEMP_DIR=$(mktemp -d)
-    ARCHIVE="${TEMP_DIR}/${BINARY_NAME}.tar.gz"
+    trap 'rm -rf "$TEMP_DIR"' EXIT
 
-    info "Downloading from: $DOWNLOAD_URL"
-    if ! curl -fsSL "$DOWNLOAD_URL" -o "$ARCHIVE"; then
-        error "Failed to download binary"
-    fi
+    info "Cloning $REPO_URL ($REF)..."
+    git clone --depth 1 --branch "$REF" "$REPO_URL" "$TEMP_DIR/rtk" \
+        || error "Failed to clone repository"
 
-    info "Extracting..."
-    tar -xzf "$ARCHIVE" -C "$TEMP_DIR"
+    info "Building release binary (this may take a few minutes)..."
+    (cd "$TEMP_DIR/rtk" && cargo build --release) \
+        || error "Build failed"
 
     mkdir -p "$INSTALL_DIR"
-    mv "${TEMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/"
+    mv "$TEMP_DIR/rtk/target/release/$BINARY_NAME" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-
-    # Cleanup
-    rm -rf "$TEMP_DIR"
-
-    info "Successfully installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
+    info "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
 }
 
-# Verify installation
 verify() {
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
         info "Verification: $($BINARY_NAME --version)"
     else
         warn "Binary installed but not in PATH. Add to your shell profile:"
-        warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        warn "  export PATH=\"$INSTALL_DIR:\$PATH\""
     fi
 }
 
 main() {
-    info "Installing $BINARY_NAME..."
-
-    detect_os
-    detect_arch
-    get_target
-    get_latest_version
-    install
+    info "Installing $BINARY_NAME from source..."
+    check_deps
+    build_and_install
     verify
 
     echo ""
