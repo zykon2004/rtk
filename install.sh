@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
 # rtk installer - https://github.com/zykon2004/rtk
-# Builds rtk from source. Requires: git, cargo (https://rustup.rs).
-# Usage: curl -fsSL https://raw.githubusercontent.com/zykon2004/rtk/refs/heads/master/install.sh | sh
+# Builds rtk from the LOCAL checkout (no network fetch, no git clone).
+# Requires: cargo (https://rustup.rs).
+# Usage: ./install.sh
 #
-# Override repo or ref:
-#   RTK_REPO_URL=https://github.com/other/rtk.git RTK_REF=mybranch ./install.sh
+# Override install dir:
+#   RTK_INSTALL_DIR=/usr/local/bin ./install.sh
 
 set -e
 
-REPO_URL="${RTK_REPO_URL:-https://github.com/zykon2004/rtk.git}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY_NAME="rtk"
 INSTALL_DIR="${RTK_INSTALL_DIR:-$HOME/.local/bin}"
-REF="${RTK_REF:-master}"
 
 # Colors
 RED='\033[0;31m'
@@ -33,28 +33,24 @@ error() {
 }
 
 check_deps() {
-    if ! command -v git >/dev/null 2>&1; then
-        error "git is required but not installed."
-    fi
     if ! command -v cargo >/dev/null 2>&1; then
         error "cargo is required but not installed. Install Rust via https://rustup.rs"
+    fi
+    if [ ! -f "$SCRIPT_DIR/Cargo.toml" ]; then
+        error "Cargo.toml not found in $SCRIPT_DIR. Run install.sh from the repo root."
+    fi
+    if [ ! -f "$SCRIPT_DIR/Cargo.lock" ]; then
+        error "Cargo.lock missing. Refusing to build without a pinned lockfile."
     fi
 }
 
 build_and_install() {
-    TEMP_DIR=$(mktemp -d)
-    trap 'rm -rf "$TEMP_DIR"' EXIT
-
-    info "Cloning $REPO_URL ($REF)..."
-    git clone --depth 1 --branch "$REF" "$REPO_URL" "$TEMP_DIR/rtk" \
-        || error "Failed to clone repository"
-
-    info "Building release binary (this may take a few minutes)..."
-    (cd "$TEMP_DIR/rtk" && cargo build --release) \
+    info "Building release binary from $SCRIPT_DIR (this may take a few minutes)..."
+    (cd "$SCRIPT_DIR" && cargo build --release --locked) \
         || error "Build failed"
 
     mkdir -p "$INSTALL_DIR"
-    mv "$TEMP_DIR/rtk/target/release/$BINARY_NAME" "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/target/release/$BINARY_NAME" "$INSTALL_DIR/"
     chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
     info "Installed $BINARY_NAME to $INSTALL_DIR/$BINARY_NAME"
@@ -70,7 +66,7 @@ verify() {
 }
 
 main() {
-    info "Installing $BINARY_NAME from source..."
+    info "Installing $BINARY_NAME from local checkout..."
     check_deps
     build_and_install
     verify
