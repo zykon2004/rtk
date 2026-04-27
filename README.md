@@ -22,15 +22,6 @@
   <a href="https://discord.gg/RySmvNF5kF">Discord</a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> &bull;
-  <a href="README_fr.md">Francais</a> &bull;
-  <a href="README_zh.md">中文</a> &bull;
-  <a href="README_ja.md">日本語</a> &bull;
-  <a href="README_ko.md">한국어</a> &bull;
-  <a href="README_es.md">Espanol</a>
-</p>
-
 ---
 
 rtk filters and compresses command outputs before they reach your LLM context. Single Rust binary, 100+ supported commands, <10ms overhead.
