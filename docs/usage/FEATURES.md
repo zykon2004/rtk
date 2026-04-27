@@ -1165,18 +1165,6 @@ rtk cc-economics --format json        # Export JSON
 
 ---
 
-### `rtk hook-audit` -- Metriques du hook
-
-**Prerequis :** Necessite `RTK_HOOK_AUDIT=1` dans l'environnement.
-
-```bash
-rtk hook-audit                        # 7 derniers jours (defaut)
-rtk hook-audit --since 30             # 30 derniers jours
-rtk hook-audit --since 0              # Tout l'historique
-```
-
----
-
 ## Systeme de hooks
 
 ### Fonctionnement
@@ -1332,7 +1320,6 @@ exclude_commands = []       # Commandes a exclure de la recriture automatique
 | Variable | Description |
 |----------|-------------|
 | `RTK_TEE_DIR` | Surcharge le repertoire tee |
-| `RTK_HOOK_AUDIT=1` | Activer l'audit du hook |
 | `SKIP_ENV_VALIDATION=1` | Desactiver la validation d'env (Next.js, etc.) |
 
 ---

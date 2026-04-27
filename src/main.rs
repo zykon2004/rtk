@@ -737,15 +737,6 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-
-    /// Show hook rewrite audit metrics (requires RTK_HOOK_AUDIT=1)
-    #[command(name = "hook-audit")]
-    HookAudit {
-        /// Show entries from last N days (0 = all time)
-        #[arg(short, long, default_value = "7")]
-        since: u64,
-    },
-
     /// Rewrite a raw command to its RTK equivalent (single source of truth for hooks)
     ///
     /// Exits 0 and prints the rewritten command if supported.
@@ -1137,7 +1128,6 @@ const RTK_META_COMMANDS: &[&str] = &[
     "proxy",
     "run",
     "hook",
-    "hook-audit",
     "pipe",
     "cc-economics",
     "verify",
@@ -2192,12 +2182,6 @@ fn run_cli() -> Result<i32> {
         Commands::Gradlew { args } => gradlew_cmd::run(&args, cli.verbose)?,
 
         Commands::Mvn { args } => mvn_cmd::run(&args, cli.verbose)?,
-
-        Commands::HookAudit { since } => {
-            hooks::hook_audit_cmd::run(since, cli.verbose)?;
-            0
-        }
-
         Commands::Hook { command } => match command {
             HookCommands::Claude => {
                 hooks::hook_cmd::run_claude()?;
@@ -3002,7 +2986,6 @@ mod tests {
             vec!["rtk", "config"],
             vec!["rtk", "proxy", "echo", "hi"],
             vec!["rtk", "run", "-c", "echo hi"],
-            vec!["rtk", "hook-audit"],
             vec!["rtk", "cc-economics"],
         ];
         for args in &meta_cmds_that_parse {
