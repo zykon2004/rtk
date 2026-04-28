@@ -55,6 +55,11 @@ const CLAUDE_MD: &str = "CLAUDE.md";
 const AGENTS_MD: &str = "AGENTS.md";
 const RTK_MD_REF: &str = "@RTK.md";
 const GEMINI_MD: &str = "GEMINI.md";
+const CODEX_CONFIG_TOML: &str = "config.toml";
+const CODEX_SANDBOX_MODE_KEY: &str = "sandbox_mode";
+const CODEX_SANDBOX_MODE: &str = "workspace-write";
+const CODEX_SANDBOX_TABLE: &str = "sandbox_workspace_write";
+const CODEX_WRITABLE_ROOTS_KEY: &str = "writable_roots";
 
 /// Control flow for settings.json patching
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,6 +76,11 @@ pub enum PatchResult {
     AlreadyPresent, // Hook was already in settings.json
     Declined,       // User declined when prompted
     Skipped,        // --no-patch flag used
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum CodexConfigWarning {
+    SandboxModeNotWorkspaceWrite(String),
 }
 
 // Legacy full instructions for backward compatibility (--claude-md mode)
@@ -243,13 +253,7 @@ pub fn run(
         if hook_only {
             anyhow::bail!("--codex cannot be combined with --hook-only");
         }
-        if matches!(patch_mode, PatchMode::Auto) {
-            anyhow::bail!("--codex cannot be combined with --auto-patch");
-        }
-        if matches!(patch_mode, PatchMode::Skip) {
-            anyhow::bail!("--codex cannot be combined with --no-patch");
-        }
-        return run_codex_mode(global, verbose);
+        return run_codex_mode(global, patch_mode, verbose);
     }
 
     // Validation: Global-only features
@@ -361,9 +365,13 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
 /// Prints to stderr (stdout may be piped), reads from stdin
 /// Default is No (capital N)
 fn prompt_user_consent(settings_path: &Path) -> Result<bool> {
+    prompt_user_consent_for("Patch existing", settings_path)
+}
+
+fn prompt_user_consent_for(action: &str, settings_path: &Path) -> Result<bool> {
     use std::io::{self, BufRead, IsTerminal};
 
-    eprintln!("\nPatch existing {}? [y/N] ", settings_path.display());
+    eprintln!("\n{} {}? [y/N] ", action, settings_path.display());
 
     // If stdin is not a terminal (piped), default to No
     if !io::stdin().is_terminal() {
@@ -1346,24 +1354,35 @@ fn run_antigravity_mode_at(base_dir: &Path, verbose: u8) -> Result<()> {
     Ok(())
 }
 
-fn run_codex_mode(global: bool, verbose: u8) -> Result<()> {
-    let (agents_md_path, rtk_md_path) = if global {
+fn run_codex_mode(global: bool, patch_mode: PatchMode, verbose: u8) -> Result<()> {
+    let (agents_md_path, rtk_md_path, config_path) = if global {
         let codex_dir = resolve_codex_dir()?;
-        (codex_dir.join(AGENTS_MD), codex_dir.join(RTK_MD))
+        (
+            codex_dir.join(AGENTS_MD),
+            codex_dir.join(RTK_MD),
+            Some(codex_dir.join(CODEX_CONFIG_TOML)),
+        )
     } else {
-        (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD))
+        (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD), None)
     };
 
-    run_codex_mode_with_paths(agents_md_path, rtk_md_path, global, verbose)
+    run_codex_mode_with_paths(
+        agents_md_path,
+        rtk_md_path,
+        config_path,
+        patch_mode,
+        verbose,
+    )
 }
 
 fn run_codex_mode_with_paths(
     agents_md_path: PathBuf,
     rtk_md_path: PathBuf,
-    global: bool,
+    codex_config_path: Option<PathBuf>,
+    patch_mode: PatchMode,
     verbose: u8,
 ) -> Result<()> {
-    if global {
+    if codex_config_path.is_some() {
         if let Some(parent) = agents_md_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!(
@@ -1377,7 +1396,7 @@ fn run_codex_mode_with_paths(
     // ISSUE #892: In global mode, use absolute path so @RTK.md resolves
     // from any CWD (worktrees, nested projects). Codex resolves @ references
     // relative to CWD, not the AGENTS.md file location.
-    let rtk_md_ref = if global {
+    let rtk_md_ref = if codex_config_path.is_some() {
         codex_rtk_md_ref(
             rtk_md_path
                 .parent()
@@ -1389,6 +1408,10 @@ fn run_codex_mode_with_paths(
 
     write_if_changed(&rtk_md_path, RTK_SLIM_CODEX, RTK_MD, verbose)?;
     let added_ref = patch_agents_md(&agents_md_path, &rtk_md_ref, verbose)?;
+    let codex_config_patch = codex_config_path
+        .as_deref()
+        .map(|path| patch_codex_writable_roots(path, patch_mode, verbose))
+        .transpose()?;
 
     println!("\nRTK configured for Codex CLI.\n");
     println!("  RTK.md:    {}", rtk_md_path.display());
@@ -1397,19 +1420,205 @@ fn run_codex_mode_with_paths(
     } else {
         println!("  AGENTS.md: {} reference already present", rtk_md_ref);
     }
-    if global {
+    if codex_config_path.is_some() {
         println!(
             "\n  Codex global instructions path: {}",
             agents_md_path.display()
         );
+        if let Some((config_path, data_dir, result, warning)) = codex_config_patch {
+            match result {
+                PatchResult::Patched => {
+                    println!("  Codex writable root added: {}", data_dir.display());
+                }
+                PatchResult::AlreadyPresent => {
+                    println!(
+                        "  Codex writable root already present: {}",
+                        data_dir.display()
+                    );
+                }
+                PatchResult::Declined => {
+                    println!("  Codex config patch declined");
+                }
+                PatchResult::Skipped => {
+                    println!("  Codex config patch skipped");
+                }
+            }
+            if let Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(mode)) = warning {
+                println!(
+                    "  Note: Codex sandbox_mode is {:?}; RTK gain tracking still needs workspace-write.",
+                    mode
+                );
+            }
+            println!("  Codex config path: {}", config_path.display());
+        }
     } else {
         println!(
             "\n  Codex project instructions path: {}",
             agents_md_path.display()
         );
+        println!("  Note: run `rtk init -g --codex` once to let Codex write RTK gain data.");
     }
 
     Ok(())
+}
+
+fn patch_codex_writable_roots(
+    config_path: &Path,
+    patch_mode: PatchMode,
+    verbose: u8,
+) -> Result<(PathBuf, PathBuf, PatchResult, Option<CodexConfigWarning>)> {
+    let rtk_data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(crate::core::constants::RTK_DATA_DIR);
+
+    let existing = if config_path.exists() {
+        fs::read_to_string(&config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?
+    } else {
+        String::new()
+    };
+
+    let root = rtk_data_dir.to_string_lossy();
+    let (updated, warning) = add_writable_root_to_codex_config(&existing, &root)
+        .with_context(|| format!("Cannot safely patch {}", config_path.display()))?;
+    let changed = updated != existing;
+
+    if !changed {
+        if verbose > 0 {
+            eprintln!("Codex config already includes RTK writable root");
+        }
+        return Ok((
+            config_path.to_path_buf(),
+            rtk_data_dir,
+            PatchResult::AlreadyPresent,
+            warning,
+        ));
+    }
+
+    match patch_mode {
+        PatchMode::Skip => {
+            print_codex_config_manual_instructions(config_path, &rtk_data_dir);
+            return Ok((
+                config_path.to_path_buf(),
+                rtk_data_dir,
+                PatchResult::Skipped,
+                warning,
+            ));
+        }
+        PatchMode::Ask => {
+            if !prompt_user_consent_for("Patch Codex config", config_path)? {
+                print_codex_config_manual_instructions(config_path, &rtk_data_dir);
+                return Ok((
+                    config_path.to_path_buf(),
+                    rtk_data_dir,
+                    PatchResult::Declined,
+                    warning,
+                ));
+            }
+        }
+        PatchMode::Auto => {}
+    }
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create Codex config directory: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    if changed {
+        atomic_write(config_path, &updated)
+            .with_context(|| format!("Failed to write {}", config_path.display()))?;
+        if verbose > 0 {
+            eprintln!("Updated Codex config: {}", config_path.display());
+        }
+    }
+
+    Ok((
+        config_path.to_path_buf(),
+        rtk_data_dir,
+        PatchResult::Patched,
+        warning,
+    ))
+}
+
+fn print_codex_config_manual_instructions(config_path: &Path, rtk_data_dir: &Path) {
+    println!("\n  MANUAL STEP: Add this to {}:", config_path.display());
+    println!("  sandbox_mode = \"workspace-write\"");
+    println!("\n  [sandbox_workspace_write]");
+    println!("  writable_roots = [");
+    println!("    \"{}\",", rtk_data_dir.display());
+    println!("  ]\n");
+}
+
+fn add_writable_root_to_codex_config(
+    content: &str,
+    root: &str,
+) -> Result<(String, Option<CodexConfigWarning>)> {
+    use toml_edit::{value, Array, DocumentMut, Item, Table};
+
+    let mut doc = content
+        .parse::<DocumentMut>()
+        .map_err(|err| anyhow::anyhow!("Codex config is not valid TOML: {err}"))?;
+
+    let warning = match doc.get(CODEX_SANDBOX_MODE_KEY).and_then(|item| item.as_str()) {
+        Some(CODEX_SANDBOX_MODE) => None,
+        Some(mode) => Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(
+            mode.to_string(),
+        )),
+        None => {
+            doc[CODEX_SANDBOX_MODE_KEY] = value(CODEX_SANDBOX_MODE);
+            None
+        }
+    };
+
+    if doc.get(CODEX_SANDBOX_MODE_KEY).is_some()
+        && doc
+            .get(CODEX_SANDBOX_MODE_KEY)
+            .and_then(|item| item.as_str())
+            .is_none()
+    {
+        anyhow::bail!("{} must be a TOML string", CODEX_SANDBOX_MODE_KEY);
+    }
+
+    if !doc.contains_key(CODEX_SANDBOX_TABLE) {
+        doc[CODEX_SANDBOX_TABLE] = Item::Table(Table::new());
+    }
+
+    if !doc[CODEX_SANDBOX_TABLE].is_table() {
+        anyhow::bail!(
+            "{} must be a TOML table to add RTK writable roots",
+            CODEX_SANDBOX_TABLE
+        );
+    }
+
+    let sandbox_table = doc[CODEX_SANDBOX_TABLE]
+        .as_table_mut()
+        .expect("sandbox_workspace_write was normalized to a table");
+
+    if !sandbox_table.contains_key(CODEX_WRITABLE_ROOTS_KEY) {
+        sandbox_table[CODEX_WRITABLE_ROOTS_KEY] = value(Array::new());
+    }
+
+    if !sandbox_table[CODEX_WRITABLE_ROOTS_KEY].is_array() {
+        anyhow::bail!(
+            "{}.{} must be a TOML array to add RTK writable roots",
+            CODEX_SANDBOX_TABLE,
+            CODEX_WRITABLE_ROOTS_KEY
+        );
+    }
+
+    let roots_array = sandbox_table[CODEX_WRITABLE_ROOTS_KEY]
+        .as_array_mut()
+        .expect("writable_roots was normalized to an array");
+
+    if !roots_array.iter().any(|value| value.as_str() == Some(root)) {
+        roots_array.push(root);
+    }
+
+    Ok((doc.to_string(), warning))
 }
 
 // --- upsert_rtk_block: idempotent RTK block management ---
@@ -2805,47 +3014,31 @@ More notes
     }
 
     #[test]
-    fn test_codex_mode_rejects_auto_patch() {
-        let err = run(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            PatchMode::Auto,
-            0,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "--codex cannot be combined with --auto-patch"
-        );
+    fn test_patch_codex_writable_roots_auto_writes_temp_config() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("config.toml");
+
+        let (_config_path, _data_dir, result, warning) =
+            patch_codex_writable_roots(&config, PatchMode::Auto, 0).unwrap();
+
+        assert_eq!(result, PatchResult::Patched);
+        assert_eq!(warning, None);
+        let content = fs::read_to_string(&config).unwrap();
+        assert!(content.contains("sandbox_mode = \"workspace-write\""));
+        assert!(content.contains("[sandbox_workspace_write]"));
     }
 
     #[test]
-    fn test_codex_mode_rejects_no_patch() {
-        let err = run(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            PatchMode::Skip,
-            0,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "--codex cannot be combined with --no-patch"
-        );
+    fn test_patch_codex_writable_roots_skip_does_not_write_config() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("config.toml");
+
+        let (_config_path, _data_dir, result, warning) =
+            patch_codex_writable_roots(&config, PatchMode::Skip, 0).unwrap();
+
+        assert_eq!(result, PatchResult::Skipped);
+        assert_eq!(warning, None);
+        assert!(!config.exists());
     }
 
     #[test]
@@ -2934,14 +3127,159 @@ More notes
         let agents_md = temp.path().join("AGENTS.md");
         let rtk_md = temp.path().join("RTK.md");
 
-        run_codex_mode_with_paths(agents_md.clone(), rtk_md.clone(), true, 0).unwrap();
+        let config = temp.path().join("config.toml");
+
+        run_codex_mode_with_paths(
+            agents_md.clone(),
+            rtk_md.clone(),
+            Some(config.clone()),
+            PatchMode::Auto,
+            0,
+        )
+        .unwrap();
 
         assert!(rtk_md.exists());
+        assert!(config.exists());
         assert_eq!(fs::read_to_string(&rtk_md).unwrap(), RTK_SLIM_CODEX);
         assert_eq!(
             fs::read_to_string(&agents_md).unwrap(),
             format!("{}\n", codex_rtk_md_ref(temp.path()))
         );
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_creates_table() {
+        let content = r#"model = "gpt-5.5"
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(
+            content,
+            "/Users/test/Library/Application Support/rtk",
+        )
+        .unwrap();
+
+        assert_eq!(warning, None);
+        assert!(updated.contains("[sandbox_workspace_write]"));
+        assert!(updated.contains("sandbox_mode = \"workspace-write\""));
+        assert!(updated.contains("writable_roots = ["));
+        assert!(updated.contains("\"/Users/test/Library/Application Support/rtk\""));
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_preserves_existing_roots() {
+        let content = r#"
+[sandbox_workspace_write]
+writable_roots = ["/tmp/other"]
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap();
+
+        assert_eq!(warning, None);
+        assert!(updated.contains("\"/tmp/other\""));
+        assert!(updated.contains("\"/tmp/rtk\""));
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_is_idempotent() {
+        let content = r#"
+[sandbox_workspace_write]
+writable_roots = ["/tmp/rtk"]
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap();
+        let count = updated.matches("\"/tmp/rtk\"").count();
+
+        assert_eq!(warning, None);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_preserves_nested_sandbox_mode() {
+        let content = r#"
+[tui.model_availability_nux]
+"gpt-5.5" = 4
+sandbox_mode = "read-only"
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap();
+        let parsed: toml::Value = updated.parse().unwrap();
+
+        assert_eq!(warning, None);
+        assert_eq!(
+            parsed.get("sandbox_mode").and_then(|value| value.as_str()),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            parsed
+                .get("tui")
+                .and_then(|value| value.get("model_availability_nux"))
+                .and_then(|value| value.get("sandbox_mode"))
+                .and_then(|value| value.as_str()),
+            Some("read-only")
+        );
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_rejects_invalid_toml() {
+        let err = add_writable_root_to_codex_config("not = [valid", "/tmp/rtk").unwrap_err();
+        assert!(err.to_string().contains("not valid TOML"));
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_rejects_incompatible_roots() {
+        let content = r#"
+[sandbox_workspace_write]
+writable_roots = "/tmp/other"
+"#;
+
+        let err = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap_err();
+        assert!(err.to_string().contains("must be a TOML array"));
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_preserves_comments() {
+        let content = r#"
+# user model choice
+model = "gpt-5.5"
+
+# sandbox roots
+[sandbox_workspace_write]
+# existing user root
+writable_roots = ["/tmp/other"]
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap();
+
+        assert_eq!(warning, None);
+        assert!(updated.contains("# user model choice"));
+        assert!(updated.contains("# sandbox roots"));
+        assert!(updated.contains("# existing user root"));
+        assert!(updated.contains("\"/tmp/other\""));
+        assert!(updated.contains("\"/tmp/rtk\""));
+    }
+
+    #[test]
+    fn test_add_writable_root_to_codex_config_preserves_existing_sandbox_mode() {
+        let content = r#"
+# strict sandbox by choice
+sandbox_mode = "read-only"
+
+[sandbox_workspace_write]
+writable_roots = ["/tmp/other"]
+"#;
+
+        let (updated, warning) = add_writable_root_to_codex_config(content, "/tmp/rtk").unwrap();
+
+        assert_eq!(
+            warning,
+            Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(
+                "read-only".to_string()
+            ))
+        );
+        assert!(updated.contains("# strict sandbox by choice"));
+        assert!(updated.contains("sandbox_mode = \"read-only\""));
+        assert!(updated.contains("\"/tmp/other\""));
+        assert!(updated.contains("\"/tmp/rtk\""));
     }
 
     #[test]

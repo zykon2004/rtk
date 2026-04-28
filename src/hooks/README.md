@@ -29,6 +29,7 @@ LLM agent integration layer that installs, validates, and executes command-rewri
 | Windsurf | `rtk init -g --agent windsurf` | `.windsurfrules` | -- |
 | Cline | `rtk init --agent cline` | `.clinerules` | -- |
 | Codex | `rtk init --codex` | RTK.md in `$CODEX_HOME` or `~/.codex` | AGENTS.md |
+| Codex global | `rtk init -g --codex` | RTK.md in `$CODEX_HOME` or `~/.codex` | AGENTS.md, prompted config.toml writable root |
 | Cursor | `rtk init -g --agent cursor` | Cursor hook | hooks.json |
 
 
