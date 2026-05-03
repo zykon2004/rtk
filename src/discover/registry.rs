@@ -3,6 +3,8 @@
 use lazy_static::lazy_static;
 use regex::{Regex, RegexSet};
 
+use crate::core::xcodebuild;
+
 use super::lexer::{split_on_operators, tokenize, TokenKind};
 use super::rules::{IGNORED_EXACT, IGNORED_PREFIXES, RULES};
 
@@ -131,6 +133,9 @@ pub fn classify_command(cmd: &str) -> Classification {
     // Strip golangci-lint global options before `run` so classify/rewrite stays
     // aligned with the runtime wrapper behavior.
     let cmd_normalized = strip_golangci_global_opts(&cmd_normalized);
+    // xcodebuild actions commonly appear after options/build settings; normalize
+    // just for classification so subcommand savings reflect the real action.
+    let cmd_normalized = xcodebuild::normalize_action_command(&cmd_normalized);
     let cmd_clean = cmd_normalized.as_str();
 
     // Exclude cat/head/tail with redirect operators — these are writes, not reads (#315)
@@ -1893,6 +1898,58 @@ mod tests {
         assert_eq!(
             rewrite_command("swift test --parallel", &[]),
             Some("rtk swift test --parallel".into())
+        );
+    }
+
+    #[test]
+    fn test_classify_xcodebuild() {
+        assert!(matches!(
+            classify_command("xcodebuild test -scheme App"),
+            Classification::Supported {
+                rtk_equivalent: "rtk xcodebuild",
+                category: "Build",
+                estimated_savings_pct: 90.0,
+                status: RtkStatus::Existing,
+            }
+        ));
+    }
+
+    #[test]
+    fn test_classify_xcodebuild_action_after_options() {
+        assert!(matches!(
+            classify_command("xcodebuild -workspace App.xcworkspace -scheme App test"),
+            Classification::Supported {
+                rtk_equivalent: "rtk xcodebuild",
+                category: "Build",
+                estimated_savings_pct: 90.0,
+                status: RtkStatus::Existing,
+            }
+        ));
+        assert!(matches!(
+            classify_command("xcodebuild -sdk iphonesimulator -scheme App build-for-testing"),
+            Classification::Supported {
+                rtk_equivalent: "rtk xcodebuild",
+                category: "Build",
+                estimated_savings_pct: 85.0,
+                status: RtkStatus::Existing,
+            }
+        ));
+        assert!(matches!(
+            classify_command("xcodebuild -xctestrun App.xctestrun -destination 'platform=iOS Simulator,name=iPhone 16' test-without-building"),
+            Classification::Supported {
+                rtk_equivalent: "rtk xcodebuild",
+                category: "Build",
+                estimated_savings_pct: 90.0,
+                status: RtkStatus::Existing,
+            }
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_xcodebuild() {
+        assert_eq!(
+            rewrite_command("xcodebuild test -scheme App", &[]),
+            Some("rtk xcodebuild test -scheme App".into())
         );
     }
 

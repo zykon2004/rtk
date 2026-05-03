@@ -47,6 +47,12 @@ Typical savings: 60-99%.
 | `cargo check` | 80% | Errors and warnings only |
 | `cargo clippy` | 80% | Lint warnings grouped by file |
 
+## Xcode / Swift
+
+| Command | Savings | What changes |
+|---------|---------|--------------|
+| `xcodebuild` | 85-90% | Build phases stripped, errors/warnings/test results kept |
+
 ## JavaScript / TypeScript
 
 | Command | Savings | What changes |

@@ -11,3 +11,4 @@ pub mod tee;
 pub mod toml_filter;
 pub mod tracking;
 pub mod utils;
+pub mod xcodebuild;

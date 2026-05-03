@@ -780,6 +780,20 @@ pub const RULES: &[RtkRule] = &[
         subcmd_status: &[],
     },
     RtkRule {
+        pattern: r"^xcodebuild(?:\s+(build-for-testing|test-without-building|build|analyze|archive|test|docbuild|installsrc|install|clean))?\b",
+        rtk_cmd: "rtk xcodebuild",
+        rewrite_prefixes: &["xcodebuild"],
+        category: "Build",
+        savings_pct: 85.0,
+        subcmd_savings: &[
+            ("test", 90.0),
+            ("test-without-building", 90.0),
+            ("build", 85.0),
+            ("build-for-testing", 85.0),
+        ],
+        subcmd_status: &[],
+    },
+    RtkRule {
         pattern: r"^systemctl\s+status\b",
         rtk_cmd: "rtk systemctl",
         rewrite_prefixes: &["systemctl"],

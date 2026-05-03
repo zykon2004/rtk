@@ -1603,6 +1603,7 @@ match_command = "^make\\b"
             "trunk-build",
             "uv-sync",
             "yamllint",
+            "xcodebuild",
         ];
 
         for name in &expected {
