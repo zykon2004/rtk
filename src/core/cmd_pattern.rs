@@ -21,6 +21,8 @@ use std::path::Path;
 use crate::discover::lexer::{tokenize, ParsedToken, TokenKind};
 use crate::discover::registry::strip_env_prefix;
 
+use super::xcodebuild;
+
 const FALLBACK: &str = "unknown";
 const MAX_TOKEN_LEN: usize = 24;
 const MAX_PATTERN_TOKENS: usize = 3;
@@ -405,6 +407,13 @@ const CMD_META: &[CmdMeta] = &[
         compose_subcmd: false,
     },
     CmdMeta {
+        name: "xcodebuild",
+        max_depth: 1,
+        flags_consume_arg: xcodebuild::flags_consume_arg(),
+        module_dash_m: false,
+        compose_subcmd: false,
+    },
+    CmdMeta {
         name: "sh",
         max_depth: 0,
         flags_consume_arg: &["-c"],
@@ -614,6 +623,10 @@ pub fn build_cmd_pattern(raw: &str) -> String {
         Some(n) => n,
         None => return FALLBACK.to_string(),
     };
+
+    if cmd_name == "xcodebuild" {
+        return xcodebuild::build_cmd_pattern(&tokens);
+    }
 
     let mut out: Vec<String> = vec![cmd_name.clone()];
     let meta = lookup_meta(&cmd_name);
@@ -828,6 +841,22 @@ mod tests {
         assert_eq!(
             p("cargo --manifest-path /path/Cargo.toml test"),
             "cargo test"
+        );
+        assert_eq!(
+            p("xcodebuild -workspace App.xcworkspace -scheme App test"),
+            "xcodebuild test"
+        );
+        assert_eq!(
+            p("xcodebuild -sdk iphonesimulator -scheme App test"),
+            "xcodebuild test"
+        );
+        assert_eq!(
+            p("xcodebuild -workspace App.xcworkspace -scheme App CODE_SIGNING_ALLOWED=NO build-for-testing"),
+            "xcodebuild build-for-testing"
+        );
+        assert_eq!(
+            p("xcodebuild -xctestrun App.xctestrun -destination 'platform=iOS Simulator,name=iPhone 16' test-without-building"),
+            "xcodebuild test-without-building"
         );
     }
 

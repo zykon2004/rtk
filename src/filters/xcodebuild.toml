@@ -1,25 +1,36 @@
 [filters.xcodebuild]
-description = "Compact xcodebuild output — strip build phases, keep errors/warnings/summary"
+description = "Compact xcodebuild output - strip build phases, keep errors/warnings/summary"
 match_command = "^xcodebuild\\b"
 strip_ansi = true
+filter_stderr = true
 strip_lines_matching = [
   "^\\s*$",
   "^CompileC\\s",
   "^CompileSwift\\s",
+  "^CompileSwiftSources\\s",
+  "^SwiftCompile\\s",
+  "^SwiftDriver\\s",
+  "^SwiftDriverJobDiscovery\\s",
   "^Ld\\s",
+  "^Libtool\\s",
   "^CreateBuildDirectory\\s",
+  "^WriteAuxiliaryFile\\s",
+  "^ClangStatCache\\s",
   "^MkDir\\s",
   "^ProcessInfoPlistFile\\s",
+  "^CopyPlistFile\\s",
   "^CopySwiftLibs\\s",
   "^CodeSign\\s",
   "^Signing Identity:",
   "^RegisterWithLaunchServices",
   "^Validate\\s",
   "^ProcessProductPackaging",
+  "^ProcessProductPackagingDER",
   "^Touch\\s",
   "^LinkStoryboards",
   "^CompileStoryboard",
   "^CompileAssetCatalog",
+  "^ExtractAppIntentsMetadata",
   "^GenerateDSYMFile",
   "^PhaseScriptExecution",
   "^PBXCp\\s",
@@ -35,7 +46,8 @@ strip_lines_matching = [
   "^\\s+builtin-",
   "^note: Using new build system",
 ]
-max_lines = 60
+head_lines = 40
+tail_lines = 20
 on_empty = "xcodebuild: ok"
 
 [[tests.xcodebuild]]
@@ -97,3 +109,72 @@ expected = "Test Suite 'All tests' started at 2026-03-10 12:00:00\nTest Suite 'A
 name = "empty input returns on_empty message"
 input = ""
 expected = "xcodebuild: ok"
+
+[[tests.xcodebuild]]
+name = "long test output keeps final summary"
+input = """
+Test Suite 'All tests' started at 2026-03-10 12:00:00
+Test Case '-[AppTests test001]' passed (0.001 seconds).
+Test Case '-[AppTests test002]' passed (0.001 seconds).
+Test Case '-[AppTests test003]' passed (0.001 seconds).
+Test Case '-[AppTests test004]' passed (0.001 seconds).
+Test Case '-[AppTests test005]' passed (0.001 seconds).
+Test Case '-[AppTests test006]' passed (0.001 seconds).
+Test Case '-[AppTests test007]' passed (0.001 seconds).
+Test Case '-[AppTests test008]' passed (0.001 seconds).
+Test Case '-[AppTests test009]' passed (0.001 seconds).
+Test Case '-[AppTests test010]' passed (0.001 seconds).
+Test Case '-[AppTests test011]' passed (0.001 seconds).
+Test Case '-[AppTests test012]' passed (0.001 seconds).
+Test Case '-[AppTests test013]' passed (0.001 seconds).
+Test Case '-[AppTests test014]' passed (0.001 seconds).
+Test Case '-[AppTests test015]' passed (0.001 seconds).
+Test Case '-[AppTests test016]' passed (0.001 seconds).
+Test Case '-[AppTests test017]' passed (0.001 seconds).
+Test Case '-[AppTests test018]' passed (0.001 seconds).
+Test Case '-[AppTests test019]' passed (0.001 seconds).
+Test Case '-[AppTests test020]' passed (0.001 seconds).
+Test Case '-[AppTests test021]' passed (0.001 seconds).
+Test Case '-[AppTests test022]' passed (0.001 seconds).
+Test Case '-[AppTests test023]' passed (0.001 seconds).
+Test Case '-[AppTests test024]' passed (0.001 seconds).
+Test Case '-[AppTests test025]' passed (0.001 seconds).
+Test Case '-[AppTests test026]' passed (0.001 seconds).
+Test Case '-[AppTests test027]' passed (0.001 seconds).
+Test Case '-[AppTests test028]' passed (0.001 seconds).
+Test Case '-[AppTests test029]' passed (0.001 seconds).
+Test Case '-[AppTests test030]' passed (0.001 seconds).
+Test Case '-[AppTests test031]' passed (0.001 seconds).
+Test Case '-[AppTests test032]' passed (0.001 seconds).
+Test Case '-[AppTests test033]' passed (0.001 seconds).
+Test Case '-[AppTests test034]' passed (0.001 seconds).
+Test Case '-[AppTests test035]' passed (0.001 seconds).
+Test Case '-[AppTests test036]' passed (0.001 seconds).
+Test Case '-[AppTests test037]' passed (0.001 seconds).
+Test Case '-[AppTests test038]' passed (0.001 seconds).
+Test Case '-[AppTests test039]' passed (0.001 seconds).
+Test Case '-[AppTests test040]' passed (0.001 seconds).
+Test Case '-[AppTests test041]' passed (0.001 seconds).
+Test Case '-[AppTests test042]' passed (0.001 seconds).
+Test Case '-[AppTests test043]' passed (0.001 seconds).
+Test Case '-[AppTests test044]' passed (0.001 seconds).
+Test Case '-[AppTests test045]' passed (0.001 seconds).
+Test Case '-[AppTests test046]' passed (0.001 seconds).
+Test Case '-[AppTests test047]' passed (0.001 seconds).
+Test Case '-[AppTests test048]' passed (0.001 seconds).
+Test Case '-[AppTests test049]' passed (0.001 seconds).
+Test Case '-[AppTests test050]' passed (0.001 seconds).
+Test Case '-[AppTests test051]' passed (0.001 seconds).
+Test Case '-[AppTests test052]' passed (0.001 seconds).
+Test Case '-[AppTests test053]' passed (0.001 seconds).
+Test Case '-[AppTests test054]' passed (0.001 seconds).
+Test Case '-[AppTests test055]' passed (0.001 seconds).
+Test Case '-[AppTests test056]' passed (0.001 seconds).
+Test Case '-[AppTests test057]' passed (0.001 seconds).
+Test Case '-[AppTests test058]' passed (0.001 seconds).
+Test Case '-[AppTests test059]' passed (0.001 seconds).
+Test Case '-[AppTests test060]' passed (0.001 seconds).
+Executed 60 tests, with 0 failures in 0.060 seconds
+** TEST SUCCEEDED **
+"""
+expected = "Test Suite 'All tests' started at 2026-03-10 12:00:00\nTest Case '-[AppTests test001]' passed (0.001 seconds).\nTest Case '-[AppTests test002]' passed (0.001 seconds).\nTest Case '-[AppTests test003]' passed (0.001 seconds).\nTest Case '-[AppTests test004]' passed (0.001 seconds).\nTest Case '-[AppTests test005]' passed (0.001 seconds).\nTest Case '-[AppTests test006]' passed (0.001 seconds).\nTest Case '-[AppTests test007]' passed (0.001 seconds).\nTest Case '-[AppTests test008]' passed (0.001 seconds).\nTest Case '-[AppTests test009]' passed (0.001 seconds).\nTest Case '-[AppTests test010]' passed (0.001 seconds).\nTest Case '-[AppTests test011]' passed (0.001 seconds).\nTest Case '-[AppTests test012]' passed (0.001 seconds).\nTest Case '-[AppTests test013]' passed (0.001 seconds).\nTest Case '-[AppTests test014]' passed (0.001 seconds).\nTest Case '-[AppTests test015]' passed (0.001 seconds).\nTest Case '-[AppTests test016]' passed (0.001 seconds).\nTest Case '-[AppTests test017]' passed (0.001 seconds).\nTest Case '-[AppTests test018]' passed (0.001 seconds).\nTest Case '-[AppTests test019]' passed (0.001 seconds).\nTest Case '-[AppTests test020]' passed (0.001 seconds).\nTest Case '-[AppTests test021]' passed (0.001 seconds).\nTest Case '-[AppTests test022]' passed (0.001 seconds).\nTest Case '-[AppTests test023]' passed (0.001 seconds).\nTest Case '-[AppTests test024]' passed (0.001 seconds).\nTest Case '-[AppTests test025]' passed (0.001 seconds).\nTest Case '-[AppTests test026]' passed (0.001 seconds).\nTest Case '-[AppTests test027]' passed (0.001 seconds).\nTest Case '-[AppTests test028]' passed (0.001 seconds).\nTest Case '-[AppTests test029]' passed (0.001 seconds).\nTest Case '-[AppTests test030]' passed (0.001 seconds).\nTest Case '-[AppTests test031]' passed (0.001 seconds).\nTest Case '-[AppTests test032]' passed (0.001 seconds).\nTest Case '-[AppTests test033]' passed (0.001 seconds).\nTest Case '-[AppTests test034]' passed (0.001 seconds).\nTest Case '-[AppTests test035]' passed (0.001 seconds).\nTest Case '-[AppTests test036]' passed (0.001 seconds).\nTest Case '-[AppTests test037]' passed (0.001 seconds).\nTest Case '-[AppTests test038]' passed (0.001 seconds).\nTest Case '-[AppTests test039]' passed (0.001 seconds).\n... (3 lines omitted)\nTest Case '-[AppTests test043]' passed (0.001 seconds).\nTest Case '-[AppTests test044]' passed (0.001 seconds).\nTest Case '-[AppTests test045]' passed (0.001 seconds).\nTest Case '-[AppTests test046]' passed (0.001 seconds).\nTest Case '-[AppTests test047]' passed (0.001 seconds).\nTest Case '-[AppTests test048]' passed (0.001 seconds).\nTest Case '-[AppTests test049]' passed (0.001 seconds).\nTest Case '-[AppTests test050]' passed (0.001 seconds).\nTest Case '-[AppTests test051]' passed (0.001 seconds).\nTest Case '-[AppTests test052]' passed (0.001 seconds).\nTest Case '-[AppTests test053]' passed (0.001 seconds).\nTest Case '-[AppTests test054]' passed (0.001 seconds).\nTest Case '-[AppTests test055]' passed (0.001 seconds).\nTest Case '-[AppTests test056]' passed (0.001 seconds).\nTest Case '-[AppTests test057]' passed (0.001 seconds).\nTest Case '-[AppTests test058]' passed (0.001 seconds).\nTest Case '-[AppTests test059]' passed (0.001 seconds).\nTest Case '-[AppTests test060]' passed (0.001 seconds).\nExecuted 60 tests, with 0 failures in 0.060 seconds\n** TEST SUCCEEDED **"
