@@ -6,7 +6,7 @@
 
 The **lifecycle management** layer for LLM agent hooks: install, uninstall, verify integrity, audit usage, and manage trust. This component creates and maintains the hook artifacts that live in `hooks/` (root), but does **not** execute rewrite logic itself — that lives in `discover/registry`.
 
-Owns: `rtk init` installation flows (4 agents via `AgentTarget` enum + 3 special modes: Gemini, Codex, OpenCode), SHA-256 integrity verification, hook version checking, audit log analysis, `rtk rewrite` CLI entry point, and TOML filter trust management.
+Owns: `rtk init` installation flows (AgentTarget-based agents plus Gemini, Codex, Copilot, and OpenCode special modes), SHA-256 integrity verification, hook version checking, audit log analysis, `rtk rewrite` CLI entry point, and TOML filter trust management.
 
 Does **not** own: the deployed hook scripts themselves (that's `hooks/`), the rewrite pattern registry (that's `discover/`), or command filtering (that's `cmds/`).
 
@@ -30,6 +30,8 @@ LLM agent integration layer that installs, validates, and executes command-rewri
 | Cline | `rtk init --agent cline` | `.clinerules` | -- |
 | Codex | `rtk init --codex` | RTK.md in `$CODEX_HOME` or `~/.codex` | AGENTS.md |
 | Codex global | `rtk init -g --codex` | RTK.md in `$CODEX_HOME` or `~/.codex` | AGENTS.md, prompted config.toml writable root |
+| Pi | `rtk init --agent pi` | RTK.md | AGENTS.md inline RTK block |
+| Pi global | `rtk init -g --agent pi` | RTK.md in `$PI_CODING_AGENT_DIR` or `~/.pi/agent` | AGENTS.md inline RTK block |
 | Cursor | `rtk init -g --agent cursor` | Cursor hook | hooks.json |
 
 

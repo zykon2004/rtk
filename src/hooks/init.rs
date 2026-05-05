@@ -8,7 +8,8 @@ use tempfile::NamedTempFile;
 
 use super::constants::{
     BEFORE_TOOL_KEY, CLAUDE_DIR, CLAUDE_HOOK_COMMAND, CODEX_DIR, CURSOR_HOOK_COMMAND,
-    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE, SETTINGS_JSON,
+    GEMINI_HOOK_FILE, HOOKS_JSON, HOOKS_SUBDIR, PI_DIR, PRE_TOOL_USE_KEY, REWRITE_HOOK_FILE,
+    SETTINGS_JSON,
 };
 use super::integrity;
 
@@ -18,6 +19,7 @@ const OPENCODE_PLUGIN: &str = include_str!("../../hooks/opencode/rtk.ts");
 // Embedded slim RTK awareness instructions
 const RTK_SLIM: &str = include_str!("../../hooks/claude/rtk-awareness.md");
 const RTK_SLIM_CODEX: &str = include_str!("../../hooks/codex/rtk-awareness.md");
+const RTK_SLIM_PI: &str = include_str!("../../hooks/pi/rtk-awareness.md");
 
 /// Template written by `rtk init` when no filters.toml exists yet.
 const FILTERS_TEMPLATE: &str = r#"# Project-local RTK filters — commit this file with your repo.
@@ -484,9 +486,19 @@ fn remove_hook_from_settings(verbose: u8) -> Result<bool> {
 }
 
 /// Full uninstall for Claude, Gemini, Codex, or Cursor artifacts.
-pub fn uninstall(global: bool, gemini: bool, codex: bool, cursor: bool, verbose: u8) -> Result<()> {
+pub fn uninstall(
+    global: bool,
+    gemini: bool,
+    codex: bool,
+    cursor: bool,
+    pi: bool,
+    verbose: u8,
+) -> Result<()> {
     if codex {
         return uninstall_codex(global, verbose);
+    }
+    if pi {
+        return uninstall_pi(global, verbose);
     }
 
     if cursor {
@@ -646,6 +658,64 @@ fn uninstall_codex_at(codex_dir: &Path, verbose: u8) -> Result<Vec<String>> {
         verbose,
     )? {
         removed.push("AGENTS.md: removed @RTK.md reference".to_string());
+    }
+
+    Ok(removed)
+}
+
+fn uninstall_pi(global: bool, verbose: u8) -> Result<()> {
+    if !global {
+        anyhow::bail!(
+            "Uninstall only works with --global flag. For local projects, manually remove RTK from AGENTS.md"
+        );
+    }
+
+    let pi_dir = resolve_pi_dir()?;
+    let removed = uninstall_pi_at(&pi_dir, verbose)?;
+
+    if removed.is_empty() {
+        println!("RTK was not installed for Pi Coding Agent (nothing to remove)");
+    } else {
+        println!("RTK uninstalled for Pi Coding Agent:");
+        for item in removed {
+            println!("  - {}", item);
+        }
+        println!("\nRestart Pi or run `/reload` to apply changes.");
+    }
+
+    Ok(())
+}
+
+fn uninstall_pi_at(pi_dir: &Path, verbose: u8) -> Result<Vec<String>> {
+    let mut removed = Vec::new();
+
+    let rtk_md_path = pi_dir.join(RTK_MD);
+    if rtk_md_path.exists() {
+        fs::remove_file(&rtk_md_path)
+            .with_context(|| format!("Failed to remove RTK.md: {}", rtk_md_path.display()))?;
+        if verbose > 0 {
+            eprintln!("Removed RTK.md: {}", rtk_md_path.display());
+        }
+        removed.push(format!("RTK.md: {}", rtk_md_path.display()));
+    }
+
+    let agents_md_path = pi_dir.join(AGENTS_MD);
+    if agents_md_path.exists() {
+        let content = fs::read_to_string(&agents_md_path)
+            .with_context(|| format!("Failed to read AGENTS.md: {}", agents_md_path.display()))?;
+        let (new_content, removed_block) = remove_rtk_block(&content);
+        if removed_block {
+            atomic_write(&agents_md_path, &format!("{}\n", new_content.trim())).with_context(
+                || format!("Failed to write AGENTS.md: {}", agents_md_path.display()),
+            )?;
+            if verbose > 0 {
+                eprintln!(
+                    "Removed RTK block from AGENTS.md: {}",
+                    agents_md_path.display()
+                );
+            }
+            removed.push("AGENTS.md: removed inline RTK instructions".to_string());
+        }
     }
 
     Ok(removed)
@@ -1462,6 +1532,60 @@ fn run_codex_mode_with_paths(
     Ok(())
 }
 
+pub fn run_pi_mode(global: bool, verbose: u8) -> Result<()> {
+    let (agents_md_path, rtk_md_path) = if global {
+        let pi_dir = resolve_pi_dir()?;
+        (pi_dir.join(AGENTS_MD), pi_dir.join(RTK_MD))
+    } else {
+        (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD))
+    };
+
+    run_pi_mode_with_paths(agents_md_path, rtk_md_path, global, verbose)
+}
+
+fn run_pi_mode_with_paths(
+    agents_md_path: PathBuf,
+    rtk_md_path: PathBuf,
+    global: bool,
+    verbose: u8,
+) -> Result<()> {
+    if global {
+        if let Some(parent) = agents_md_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create Pi config directory: {}", parent.display())
+            })?;
+        }
+    }
+
+    write_if_changed(&rtk_md_path, RTK_SLIM_PI, RTK_MD, verbose)?;
+    let action = patch_pi_agents_md(&agents_md_path, RTK_SLIM_PI, verbose)?;
+
+    println!("\nRTK configured for Pi Coding Agent.\n");
+    println!("  RTK.md:    {}", rtk_md_path.display());
+    match action {
+        RtkBlockUpsert::Added => println!("  AGENTS.md: RTK instructions added inline"),
+        RtkBlockUpsert::Updated => println!("  AGENTS.md: RTK instructions updated inline"),
+        RtkBlockUpsert::Unchanged => println!("  AGENTS.md: RTK instructions already present"),
+        RtkBlockUpsert::Malformed => {
+            println!("  AGENTS.md: existing RTK block is malformed; left unchanged")
+        }
+    }
+    if global {
+        println!(
+            "\n  Pi global instructions path: {}",
+            agents_md_path.display()
+        );
+    } else {
+        println!(
+            "\n  Pi project instructions path: {}",
+            agents_md_path.display()
+        );
+    }
+    println!("  Restart Pi or run `/reload` to load the updated instructions.");
+
+    Ok(())
+}
+
 fn patch_codex_writable_roots(
     config_path: &Path,
     patch_mode: PatchMode,
@@ -1563,7 +1687,10 @@ fn add_writable_root_to_codex_config(
         .parse::<DocumentMut>()
         .map_err(|err| anyhow::anyhow!("Codex config is not valid TOML: {err}"))?;
 
-    let warning = match doc.get(CODEX_SANDBOX_MODE_KEY).and_then(|item| item.as_str()) {
+    let warning = match doc
+        .get(CODEX_SANDBOX_MODE_KEY)
+        .and_then(|item| item.as_str())
+    {
         Some(CODEX_SANDBOX_MODE) => None,
         Some(mode) => Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(
             mode.to_string(),
@@ -1792,6 +1919,26 @@ fn patch_agents_md(path: &Path, rtk_md_ref: &str, verbose: u8) -> Result<bool> {
     Ok(true)
 }
 
+fn patch_pi_agents_md(path: &Path, block: &str, verbose: u8) -> Result<RtkBlockUpsert> {
+    let content = if path.exists() {
+        fs::read_to_string(path)
+            .with_context(|| format!("Failed to read AGENTS.md: {}", path.display()))?
+    } else {
+        String::new()
+    };
+
+    let (new_content, action) = upsert_rtk_block(&content, block);
+    if action != RtkBlockUpsert::Unchanged && action != RtkBlockUpsert::Malformed {
+        atomic_write(path, &format!("{}\n", new_content.trim()))
+            .with_context(|| format!("Failed to write AGENTS.md: {}", path.display()))?;
+        if verbose > 0 {
+            eprintln!("Patched Pi AGENTS.md: {}", path.display());
+        }
+    }
+
+    Ok(action)
+}
+
 fn has_rtk_reference(content: &str, refs: &[&str]) -> bool {
     content
         .lines()
@@ -1888,6 +2035,26 @@ fn resolve_codex_dir() -> Result<PathBuf> {
         std::env::var_os("CODEX_HOME").map(PathBuf::from),
         dirs::home_dir(),
     )
+}
+
+fn resolve_pi_dir() -> Result<PathBuf> {
+    resolve_pi_dir_from(
+        std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_pi_dir_from(
+    pi_agent_dir: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(path) = pi_agent_dir.filter(|path| !path.as_os_str().is_empty()) {
+        return Ok(path);
+    }
+
+    home_dir
+        .map(|home| home.join(PI_DIR))
+        .context("Cannot determine Pi config directory. Set $PI_CODING_AGENT_DIR or $HOME.")
 }
 
 fn resolve_codex_dir_from(
@@ -2219,9 +2386,12 @@ fn remove_cursor_hook_from_json(root: &mut serde_json::Value) -> bool {
 }
 
 /// Show current rtk configuration
-pub fn show_config(codex: bool) -> Result<()> {
+pub fn show_config(codex: bool, pi: bool) -> Result<()> {
     if codex {
         return show_codex_config();
+    }
+    if pi {
+        return show_pi_config();
     }
 
     show_claude_config()
@@ -2452,8 +2622,61 @@ fn show_claude_config() -> Result<()> {
     println!("  rtk init -g --hook-only     # Hook only, no RTK.md");
     println!("  rtk init --codex            # Configure local AGENTS.md + RTK.md");
     println!("  rtk init -g --codex         # Configure $CODEX_HOME/AGENTS.md + $CODEX_HOME/RTK.md (or ~/.codex/)");
+    println!("  rtk init --agent pi         # Configure local AGENTS.md for Pi");
+    println!("  rtk init -g --agent pi      # Configure ~/.pi/agent/AGENTS.md for Pi");
     println!("  rtk init -g --opencode      # OpenCode plugin only");
     println!("  rtk init -g --agent cursor  # Install Cursor Agent hooks");
+
+    Ok(())
+}
+
+fn show_pi_config() -> Result<()> {
+    let pi_dir = resolve_pi_dir()?;
+    let global_agents_md = pi_dir.join(AGENTS_MD);
+    let global_rtk_md = pi_dir.join(RTK_MD);
+    let local_agents_md = PathBuf::from(AGENTS_MD);
+    let local_rtk_md = PathBuf::from(RTK_MD);
+
+    println!("rtk Configuration (Pi Coding Agent):\n");
+
+    if global_rtk_md.exists() {
+        println!("[ok] Global RTK.md: {}", global_rtk_md.display());
+    } else {
+        println!("[--] Global RTK.md: not found");
+    }
+
+    if global_agents_md.exists() {
+        let content = fs::read_to_string(&global_agents_md)?;
+        if content.contains("<!-- rtk-instructions") {
+            println!("[ok] Global AGENTS.md: inline RTK instructions");
+        } else {
+            println!("[--] Global AGENTS.md: exists but rtk not configured");
+        }
+    } else {
+        println!("[--] Global AGENTS.md: not found");
+    }
+
+    if local_rtk_md.exists() {
+        println!("[ok] Local RTK.md: {}", local_rtk_md.display());
+    } else {
+        println!("[--] Local RTK.md: not found");
+    }
+
+    if local_agents_md.exists() {
+        let content = fs::read_to_string(&local_agents_md)?;
+        if content.contains("<!-- rtk-instructions") {
+            println!("[ok] Local AGENTS.md: inline RTK instructions");
+        } else {
+            println!("[--] Local AGENTS.md: exists but rtk not configured");
+        }
+    } else {
+        println!("[--] Local AGENTS.md: not found");
+    }
+
+    println!("\nUsage:");
+    println!("  rtk init --agent pi              # Configure local AGENTS.md + RTK.md");
+    println!("  rtk init -g --agent pi           # Configure ~/.pi/agent/AGENTS.md + RTK.md");
+    println!("  rtk init -g --agent pi --uninstall  # Remove global Pi RTK artifacts");
 
     Ok(())
 }
@@ -3145,6 +3368,69 @@ More notes
             fs::read_to_string(&agents_md).unwrap(),
             format!("{}\n", codex_rtk_md_ref(temp.path()))
         );
+    }
+
+    #[test]
+    fn test_run_pi_mode_writes_inline_agents_instructions() {
+        let temp = TempDir::new().unwrap();
+        let agents_md = temp.path().join("AGENTS.md");
+        let rtk_md = temp.path().join("RTK.md");
+
+        run_pi_mode_with_paths(agents_md.clone(), rtk_md.clone(), false, 0).unwrap();
+
+        assert!(rtk_md.exists());
+        assert_eq!(fs::read_to_string(&rtk_md).unwrap(), RTK_SLIM_PI);
+        let content = fs::read_to_string(&agents_md).unwrap();
+        assert!(content.contains("<!-- rtk-instructions v2 -->"));
+        assert!(content.contains("Pi Coding Agent"));
+        assert!(!content.contains("@RTK.md"));
+    }
+
+    #[test]
+    fn test_run_pi_mode_is_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let agents_md = temp.path().join("AGENTS.md");
+        let rtk_md = temp.path().join("RTK.md");
+
+        run_pi_mode_with_paths(agents_md.clone(), rtk_md.clone(), false, 0).unwrap();
+        run_pi_mode_with_paths(agents_md.clone(), rtk_md, false, 0).unwrap();
+
+        let content = fs::read_to_string(&agents_md).unwrap();
+        assert_eq!(content.matches("<!-- rtk-instructions v2 -->").count(), 1);
+    }
+
+    #[test]
+    fn test_resolve_pi_dir_prefers_env_and_ignores_empty_value() {
+        let pi_dir = PathBuf::from("/tmp/custom-pi-agent");
+        let home_dir = PathBuf::from("/tmp/home");
+
+        let preferred = resolve_pi_dir_from(Some(pi_dir.clone()), Some(home_dir.clone())).unwrap();
+        let empty_falls_back =
+            resolve_pi_dir_from(Some(PathBuf::new()), Some(home_dir.clone())).unwrap();
+        let missing_falls_back = resolve_pi_dir_from(None, Some(home_dir.clone())).unwrap();
+
+        assert_eq!(preferred, pi_dir);
+        assert_eq!(empty_falls_back, home_dir.join(".pi/agent"));
+        assert_eq!(missing_falls_back, home_dir.join(".pi/agent"));
+    }
+
+    #[test]
+    fn test_uninstall_pi_at_removes_inline_block() {
+        let temp = TempDir::new().unwrap();
+        let pi_dir = temp.path();
+        let agents_md = pi_dir.join("AGENTS.md");
+        let rtk_md = pi_dir.join("RTK.md");
+
+        fs::write(&agents_md, format!("# Team rules\n\n{}\n", RTK_SLIM_PI)).unwrap();
+        fs::write(&rtk_md, "pi config").unwrap();
+
+        let removed = uninstall_pi_at(pi_dir, 0).unwrap();
+
+        assert_eq!(removed.len(), 2);
+        assert!(!rtk_md.exists());
+        let content = fs::read_to_string(&agents_md).unwrap();
+        assert!(!content.contains("rtk-instructions"));
+        assert!(content.contains("# Team rules"));
     }
 
     #[test]
@@ -3970,7 +4256,7 @@ writable_roots = ["/tmp/other"]
         let tmp = TempDir::new().unwrap();
         with_claude_dir_override(&tmp, |claude_dir| {
             run_default_mode(true, PatchMode::Auto, 0, false).unwrap();
-            uninstall(true, false, false, false, 0).unwrap();
+            uninstall(true, false, false, false, false, 0).unwrap();
 
             assert!(!claude_dir.join(RTK_MD).exists(), "RTK.md must be removed");
             let settings_content =

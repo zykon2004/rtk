@@ -44,6 +44,8 @@ pub enum AgentTarget {
     Kilocode,
     /// Google Antigravity
     Antigravity,
+    /// Pi Coding Agent
+    Pi,
 }
 
 #[derive(Parser)]
@@ -1702,10 +1704,12 @@ fn run_cli() -> Result<i32> {
             copilot,
         } => {
             if show {
-                hooks::init::show_config(codex)?;
+                let pi = agent == Some(AgentTarget::Pi);
+                hooks::init::show_config(codex, pi)?;
             } else if uninstall {
                 let cursor = agent == Some(AgentTarget::Cursor);
-                hooks::init::uninstall(global, gemini, codex, cursor, cli.verbose)?;
+                let pi = agent == Some(AgentTarget::Pi);
+                hooks::init::uninstall(global, gemini, codex, cursor, pi, cli.verbose)?;
             } else if gemini {
                 let patch_mode = if auto_patch {
                     hooks::init::PatchMode::Auto
@@ -1729,6 +1733,8 @@ fn run_cli() -> Result<i32> {
                     );
                 }
                 hooks::init::run_antigravity_mode(cli.verbose)?;
+            } else if agent == Some(AgentTarget::Pi) {
+                hooks::init::run_pi_mode(global, cli.verbose)?;
             } else {
                 let install_opencode = opencode;
                 let install_claude = !opencode;
@@ -2647,6 +2653,17 @@ mod tests {
                 assert_eq!(command, vec!["cargo", "test"]);
             }
             _ => panic!("Expected Hook Check command"),
+        }
+    }
+
+    #[test]
+    fn test_init_pi_agent_parses() {
+        let cli = Cli::try_parse_from(["rtk", "init", "--agent", "pi"]).unwrap();
+        match cli.command {
+            Commands::Init { agent, .. } => {
+                assert_eq!(agent, Some(AgentTarget::Pi));
+            }
+            _ => panic!("Expected Init command"),
         }
     }
 

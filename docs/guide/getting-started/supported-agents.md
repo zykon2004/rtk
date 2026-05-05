@@ -1,6 +1,6 @@
 ---
 title: Supported Agents
-description: How to integrate RTK with Claude Code, Cursor, Copilot, Cline, Windsurf, Codex, OpenCode, Kilo Code, and Antigravity
+description: How to integrate RTK with Claude Code, Cursor, Copilot, Cline, Windsurf, Codex, OpenCode, Pi, Kilo Code, and Antigravity
 sidebar:
   order: 3
 ---
@@ -38,6 +38,7 @@ Agent runs "cargo test"
 | Cline / Roo Code | Rules file (prompt-level) | N/A |
 | Windsurf | Rules file (prompt-level) | N/A |
 | Codex CLI | AGENTS.md instructions | N/A |
+| Pi Coding Agent | AGENTS.md instructions | N/A |
 | Kilo Code | Rules file (prompt-level) | N/A |
 | Google Antigravity | Rules file (prompt-level) | N/A |
 | Mistral Vibe | Planned ([#800](https://github.com/rtk-ai/rtk/issues/800)) | Pending upstream |
@@ -112,6 +113,15 @@ rtk init --windsurf    # creates .windsurfrules in current project
 rtk init --codex    # creates AGENTS.md or patches existing one
 ```
 
+### Pi Coding Agent
+
+```bash
+rtk init --agent pi       # creates AGENTS.md or patches existing one
+rtk init -g --agent pi    # creates ~/.pi/agent/AGENTS.md or patches existing one
+```
+
+Pi loads `AGENTS.md` as context at startup. RTK adds inline guidance telling Pi to prefer `rtk <cmd>` over raw commands. Restart Pi or run `/reload` after installing.
+
 ### Kilo Code
 
 ```bash
@@ -140,7 +150,7 @@ Support is blocked on upstream `BeforeToolCallback` ([mistral-vibe#531](https://
 | **Plugin** | TypeScript/JS in agent's plugin system | Transparent — in-place mutation |
 | **Rules file** | Prompt-level instructions | Guidance only — agent is told to prefer `rtk <cmd>` |
 
-Rules file integrations (Cline, Windsurf, Codex, Kilo Code, Antigravity) rely on the model following instructions. Full hook integrations (Claude Code, Cursor, Gemini) are guaranteed — the command is rewritten before the agent sees it.
+Rules file and context-file integrations (Cline, Windsurf, Codex, Pi, Kilo Code, Antigravity) rely on the model following instructions. Full hook integrations (Claude Code, Cursor, Gemini) are guaranteed — the command is rewritten before the agent sees it.
 
 ## Windows support
 

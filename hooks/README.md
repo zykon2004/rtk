@@ -4,7 +4,7 @@
 
 **Deployed hook artifacts** — the actual files installed on user machines by `rtk init`. These are shell scripts, TypeScript plugins, and rules files that run outside the Rust binary. They are **thin delegates**: parse agent-specific JSON, call `rtk rewrite` as a subprocess, format agent-specific response. Zero filtering logic lives here.
 
-Owns: per-agent hook scripts and configuration files for 7 supported agents (Claude Code, Copilot, Cursor, Cline, Windsurf, Codex, OpenCode).
+Owns: per-agent hook scripts and configuration files for supported agents (Claude Code, Copilot, Cursor, Cline, Windsurf, Codex, Pi, OpenCode).
 
 Does **not** own: hook installation/uninstallation (that's `src/hooks/init.rs`), the rewrite pattern registry (that's `discover/registry`), or integrity verification (that's `src/hooks/integrity.rs`).
 
@@ -39,6 +39,7 @@ Each agent subdirectory has its own README with hook-specific details:
 - **[`cline/`](cline/README.md)** — Rules file (prompt-level), `.clinerules` project-local installation
 - **[`windsurf/`](windsurf/README.md)** — Rules file (prompt-level), `.windsurfrules` workspace-scoped
 - **[`codex/`](codex/README.md)** — Awareness document, `AGENTS.md` integration, `$CODEX_HOME` or `~/.codex/` location
+- **[`pi/`](pi/README.md)** — Awareness document, `AGENTS.md` integration, `$PI_CODING_AGENT_DIR` or `~/.pi/agent/` location
 - **[`opencode/`](opencode/README.md)** — TypeScript plugin, `zx` library, `tool.execute.before` event, in-place mutation
 
 ## Supported Agents
@@ -53,6 +54,7 @@ Each agent subdirectory has its own README with hook-specific details:
 | Cline / Roo Code | Custom instructions (rules file) | Prompt-level guidance | N/A |
 | Windsurf | Custom instructions (rules file) | Prompt-level guidance | N/A |
 | Codex CLI | AGENTS.md / instructions | Prompt-level guidance | N/A |
+| Pi Coding Agent | AGENTS.md / instructions | Prompt-level guidance | N/A |
 | OpenCode | TypeScript plugin (`tool.execute.before`) | In-place mutation | Yes |
 
 ## JSON Formats by Agent
@@ -232,4 +234,3 @@ RTK supports AI coding assistants that developers actually use day-to-day. To ad
 ### Maintenance
 
 If an agent's API changes and the hook breaks, the integration should be updated promptly. If the agent becomes unmaintained or the hook can't be fixed, the integration may be deprecated with a release note.
-

@@ -96,6 +96,7 @@ rtk init -g --codex             # Codex (OpenAI) + prompted writable RTK gain DB
 rtk init -g --agent cursor      # Cursor
 rtk init --agent windsurf       # Windsurf
 rtk init --agent cline          # Cline / Roo Code
+rtk init --agent pi             # Pi Coding Agent
 rtk init --agent kilocode       # Kilo Code
 rtk init --agent antigravity    # Google Antigravity
 
@@ -338,7 +339,7 @@ rtk git status
 
 ## Supported AI Tools
 
-RTK supports 12 AI coding tools. Each integration transparently rewrites shell commands to `rtk` equivalents for 60-90% token savings.
+RTK supports 13 AI coding tools. Each integration transparently rewrites shell commands to `rtk` equivalents for 60-90% token savings where the agent exposes a command hook; prompt-level integrations instruct the agent to use RTK.
 
 | Tool | Install | Method |
 |------|---------|--------|
@@ -352,6 +353,7 @@ RTK supports 12 AI coding tools. Each integration transparently rewrites shell c
 | **Cline / Roo Code** | `rtk init --agent cline` | .clinerules (project-scoped) |
 | **OpenCode** | `rtk init -g --opencode` | Plugin TS (tool.execute.before) |
 | **OpenClaw** | `openclaw plugins install ./openclaw` | Plugin TS (before_tool_call) |
+| **Pi Coding Agent** | `rtk init --agent pi` | AGENTS.md inline instructions (project-scoped) |
 | **Mistral Vibe** | Planned ([#800](https://github.com/rtk-ai/rtk/issues/800)) | Blocked on upstream |
 | **Kilo Code** | `rtk init --agent kilocode` | .kilocode/rules/rtk-rules.md (project-scoped) |
 | **Google Antigravity** | `rtk init --agent antigravity` | .agents/rules/antigravity-rtk-rules.md (project-scoped) |
