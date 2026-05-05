@@ -243,6 +243,7 @@ pub struct MonthStats {
 /// Type alias for command statistics tuple: (command, count, saved_tokens, avg_savings_pct, avg_time_ms)
 type CommandStats = (String, usize, usize, f64, u64);
 
+#[allow(dead_code)]
 impl Tracker {
     /// Create a new tracker instance.
     ///
@@ -315,44 +316,7 @@ impl Tracker {
 
     #[cfg(test)]
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS commands (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                original_cmd TEXT NOT NULL,
-                rtk_cmd TEXT NOT NULL,
-                input_tokens INTEGER NOT NULL,
-                output_tokens INTEGER NOT NULL,
-                saved_tokens INTEGER NOT NULL,
-                savings_pct REAL NOT NULL,
-                exec_time_ms INTEGER DEFAULT 0,
-                project_path TEXT DEFAULT ''
-            )",
-            [],
-        )?;
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_timestamp ON commands(timestamp)",
-            [],
-        )?;
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_path_timestamp ON commands(project_path, timestamp)",
-            [],
-        )?;
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS parse_failures (
-                id INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                raw_command TEXT NOT NULL,
-                error_message TEXT NOT NULL,
-                fallback_succeeded INTEGER NOT NULL DEFAULT 0
-            )",
-            [],
-        )?;
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pf_timestamp ON parse_failures(timestamp)",
-            [],
-        )?;
-        Ok(())
+        create_tables_v1(&self.conn)
     }
 
     /// Record a command execution with token counts and timing.
@@ -1186,6 +1150,7 @@ impl Tracker {
 }
 
 /// Map a sanitized cmd_pattern to an ecosystem category.
+#[allow(dead_code)]
 fn categorize_command(cmd_pattern: &str) -> String {
     // cmd_pattern always starts with the tool name (e.g. "git status", "npm run").
     let tool = cmd_pattern.split_whitespace().next().unwrap_or("other");
@@ -1790,13 +1755,7 @@ mod tests {
 
         // Insert into commands
         tracker
-            .record(
-                "git status",
-                &format!("rtk git status reset_test_{}", pid),
-                100,
-                20,
-                50,
-            )
+            .record("git status", false, 100, 20, 50)
             .expect("Failed to record command");
 
         // Insert into parse_failures

@@ -183,14 +183,12 @@ fn copilot_cli_response(cmd: &str, args: &Value) -> Option<Value> {
     copilot_cli_response_from_decision(
         args,
         decide_hook_action(cmd, permissions::Host::Claude),
-        cmd,
     )
 }
 
 fn copilot_cli_response_from_decision(
     args: &Value,
     decision: HookDecision,
-    cmd: &str,
 ) -> Option<Value> {
     let (rewritten, allow) = match decision {
         HookDecision::Deny => {
@@ -405,9 +403,7 @@ pub fn run_cursor() -> Result<()> {
 
     let output = match decide_hook_action(&cmd, permissions::Host::Cursor) {
         HookDecision::AllowRewrite(rewritten) => cursor_allow(&rewritten),
-        other => {
-            "{}".to_string()
-        }
+        _ => "{}".to_string(),
     };
     let _ = writeln!(io::stdout(), "{output}");
     Ok(())
@@ -563,7 +559,6 @@ mod tests {
         let r = copilot_cli_response_from_decision(
             &cli_args("cargo test"),
             HookDecision::AskRewrite("rtk cargo test".into()),
-            "cargo test",
         )
         .unwrap();
         assert!(
@@ -578,7 +573,6 @@ mod tests {
         let r = copilot_cli_response_from_decision(
             &cli_args("cargo test"),
             HookDecision::AllowRewrite("rtk cargo test".into()),
-            "cargo test",
         )
         .unwrap();
         assert_eq!(r["permissionDecision"], "allow");
@@ -590,7 +584,6 @@ mod tests {
         assert!(copilot_cli_response_from_decision(
             &cli_args("cargo test"),
             HookDecision::Deny,
-            "cargo test",
         )
         .is_none());
     }
@@ -602,7 +595,6 @@ mod tests {
         assert!(copilot_cli_response_from_decision(
             &cli_args("git status & rm -rf /tmp/x"),
             HookDecision::Defer,
-            "git status & rm -rf /tmp/x",
         )
         .is_none());
     }
@@ -647,7 +639,6 @@ mod tests {
         let r = copilot_cli_response_from_decision(
             &args,
             HookDecision::AskRewrite("rtk cargo install ripgrep".into()),
-            "cargo install ripgrep",
         )
         .unwrap();
         let modified = &r["modifiedArgs"];
@@ -664,7 +655,7 @@ mod tests {
             &[],
             &["Bash(git:*)".to_string()],
         );
-        copilot_cli_response_from_decision(&cli_args(cmd), decide_from_verdict(cmd, verdict), cmd)
+        copilot_cli_response_from_decision(&cli_args(cmd), decide_from_verdict(cmd, verdict))
     }
 
     #[test]

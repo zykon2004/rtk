@@ -271,7 +271,7 @@ pub fn run(
     patch_mode: PatchMode,
     ctx: InitContext,
 ) -> Result<()> {
-    let InitContext { verbose, dry_run } = ctx;
+    let InitContext { dry_run, .. } = ctx;
     // One-time privacy-migration notice (no-op if already announced).
     crate::core::tracking::print_privacy_migration_notice_if_needed();
 
@@ -330,10 +330,6 @@ pub fn run(
                 install_cursor_hooks(ctx)?;
             }
         }
-    }
-
-    if !dry_run {
-        prompt_telemetry_consent()?;
     }
 
     if dry_run {
@@ -583,6 +579,9 @@ pub fn uninstall(
             print_dry_run_footer();
         }
         return Ok(());
+    }
+    if pi {
+        return uninstall_pi(global, ctx);
     }
 
     if cursor {
@@ -2423,7 +2422,10 @@ fn add_writable_root_to_codex_config(
         .parse::<DocumentMut>()
         .map_err(|err| anyhow::anyhow!("Codex config is not valid TOML: {err}"))?;
 
-    let warning = match doc.get(CODEX_SANDBOX_MODE_KEY).and_then(|item| item.as_str()) {
+    let warning = match doc
+        .get(CODEX_SANDBOX_MODE_KEY)
+        .and_then(|item| item.as_str())
+    {
         Some(CODEX_SANDBOX_MODE) => None,
         Some(mode) => Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(
             mode.to_string(),
@@ -2903,6 +2905,26 @@ fn resolve_codex_dir() -> Result<PathBuf> {
     )
 }
 
+fn resolve_pi_dir() -> Result<PathBuf> {
+    resolve_pi_dir_from(
+        std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_pi_dir_from(
+    pi_agent_dir: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(path) = pi_agent_dir.filter(|path| !path.as_os_str().is_empty()) {
+        return Ok(path);
+    }
+
+    home_dir
+        .map(|home| home.join(PI_DIR))
+        .context("Cannot determine Pi config directory. Set $PI_CODING_AGENT_DIR or $HOME.")
+}
+
 fn resolve_codex_dir_from(
     codex_home: Option<PathBuf>,
     home_dir: Option<PathBuf>,
@@ -2942,16 +2964,6 @@ fn resolve_opencode_dir() -> Result<PathBuf> {
 }
 
 // ─── Pi coding agent support ──────────────────────────────────────────
-
-/// Resolve Pi config directory, honouring `PI_CODING_AGENT_DIR` override.
-fn resolve_pi_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var(PI_CODING_AGENT_DIR_ENV) {
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
-    }
-    resolve_home_subdir(PI_DIR)
-}
 
 /// Return the path to the installed Pi extension file.
 fn pi_plugin_path(pi_dir: &Path) -> PathBuf {
@@ -3445,9 +3457,12 @@ fn remove_cursor_hook_from_json(root: &mut serde_json::Value) -> bool {
 }
 
 /// Show current rtk configuration
-pub fn show_config(codex: bool) -> Result<()> {
+pub fn show_config(codex: bool, pi: bool) -> Result<()> {
     if codex {
         return show_codex_config();
+    }
+    if pi {
+        return show_pi_config();
     }
 
     show_claude_config()
@@ -3678,8 +3693,61 @@ fn show_claude_config() -> Result<()> {
     println!("  rtk init -g --hook-only     # Hook only, no RTK.md");
     println!("  rtk init --codex            # Configure local AGENTS.md + RTK.md");
     println!("  rtk init -g --codex         # Configure $CODEX_HOME/AGENTS.md + $CODEX_HOME/RTK.md (or ~/.codex/)");
+    println!("  rtk init --agent pi         # Configure local AGENTS.md for Pi");
+    println!("  rtk init -g --agent pi      # Configure ~/.pi/agent/AGENTS.md for Pi");
     println!("  rtk init -g --opencode      # OpenCode plugin only");
     println!("  rtk init -g --agent cursor  # Install Cursor Agent hooks");
+
+    Ok(())
+}
+
+fn show_pi_config() -> Result<()> {
+    let pi_dir = resolve_pi_dir()?;
+    let global_agents_md = pi_dir.join(AGENTS_MD);
+    let global_rtk_md = pi_dir.join(RTK_MD);
+    let local_agents_md = PathBuf::from(AGENTS_MD);
+    let local_rtk_md = PathBuf::from(RTK_MD);
+
+    println!("rtk Configuration (Pi Coding Agent):\n");
+
+    if global_rtk_md.exists() {
+        println!("[ok] Global RTK.md: {}", global_rtk_md.display());
+    } else {
+        println!("[--] Global RTK.md: not found");
+    }
+
+    if global_agents_md.exists() {
+        let content = fs::read_to_string(&global_agents_md)?;
+        if content.contains("<!-- rtk-instructions") {
+            println!("[ok] Global AGENTS.md: inline RTK instructions");
+        } else {
+            println!("[--] Global AGENTS.md: exists but rtk not configured");
+        }
+    } else {
+        println!("[--] Global AGENTS.md: not found");
+    }
+
+    if local_rtk_md.exists() {
+        println!("[ok] Local RTK.md: {}", local_rtk_md.display());
+    } else {
+        println!("[--] Local RTK.md: not found");
+    }
+
+    if local_agents_md.exists() {
+        let content = fs::read_to_string(&local_agents_md)?;
+        if content.contains("<!-- rtk-instructions") {
+            println!("[ok] Local AGENTS.md: inline RTK instructions");
+        } else {
+            println!("[--] Local AGENTS.md: exists but rtk not configured");
+        }
+    } else {
+        println!("[--] Local AGENTS.md: not found");
+    }
+
+    println!("\nUsage:");
+    println!("  rtk init --agent pi              # Configure local AGENTS.md + RTK.md");
+    println!("  rtk init -g --agent pi           # Configure ~/.pi/agent/AGENTS.md + RTK.md");
+    println!("  rtk init -g --agent pi --uninstall  # Remove global Pi RTK artifacts");
 
     Ok(())
 }
@@ -5151,6 +5219,21 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_pi_dir_prefers_env_and_ignores_empty_value() {
+        let pi_dir = PathBuf::from("/tmp/custom-pi-agent");
+        let home_dir = PathBuf::from("/tmp/home");
+
+        let preferred = resolve_pi_dir_from(Some(pi_dir.clone()), Some(home_dir.clone())).unwrap();
+        let empty_falls_back =
+            resolve_pi_dir_from(Some(PathBuf::new()), Some(home_dir.clone())).unwrap();
+        let missing_falls_back = resolve_pi_dir_from(None, Some(home_dir.clone())).unwrap();
+
+        assert_eq!(preferred, pi_dir);
+        assert_eq!(empty_falls_back, home_dir.join(".pi/agent"));
+        assert_eq!(missing_falls_back, home_dir.join(".pi/agent"));
+    }
+
+    #[test]
     fn test_add_writable_root_to_codex_config_creates_table() {
         let content = r#"model = "gpt-5.5"
 "#;
@@ -5467,7 +5550,8 @@ writable_roots = ["/tmp/other"]
         run_codex_mode_with_paths(
             agents_md.clone(),
             rtk_md.clone(),
-            true,
+            Some(temp.path().join("config.toml")),
+            PatchMode::Ask,
             InitContext {
                 dry_run: true,
                 ..Default::default()

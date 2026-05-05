@@ -1827,7 +1827,8 @@ fn run_cli() -> Result<i32> {
                 dry_run,
             };
             if show {
-                hooks::init::show_config(codex)?;
+                let pi = agent == Some(AgentTarget::Pi);
+                hooks::init::show_config(codex, pi)?;
             } else if uninstall && copilot {
                 if global {
                     hooks::init::uninstall_copilot_global(ctx)?;
@@ -2972,6 +2973,17 @@ mod tests {
                 assert_eq!(command, vec!["shadowenv", "exec", "--", "git", "status"]);
             }
             _ => panic!("Expected Hook Check command"),
+        }
+    }
+
+    #[test]
+    fn test_init_pi_agent_parses() {
+        let cli = Cli::try_parse_from(["rtk", "init", "--agent", "pi"]).unwrap();
+        match cli.command {
+            Commands::Init { agent, .. } => {
+                assert_eq!(agent, Some(AgentTarget::Pi));
+            }
+            _ => panic!("Expected Init command"),
         }
     }
 

@@ -2171,7 +2171,7 @@ mod tests {
     #[test]
     fn test_rewrite_xcodebuild() {
         assert_eq!(
-            rewrite_command("xcodebuild test -scheme App", &[]),
+            rewrite_command("xcodebuild test -scheme App", &[], &[]),
             Some("rtk xcodebuild test -scheme App".into())
         );
     }

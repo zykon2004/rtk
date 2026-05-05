@@ -83,7 +83,7 @@ cargo install --path .
 ### Verify Installation
 
 ```bash
-rtk --version   # Should show "rtk 0.42.4"
+rtk --version   # Should show "rtk 2.0.2"
 rtk gain        # Should show token savings stats
 ```
 
@@ -99,6 +99,7 @@ rtk init -g --codex             # Codex (OpenAI) + prompted writable RTK gain DB
 rtk init -g --agent cursor      # Cursor
 rtk init -g --agent windsurf    # Windsurf
 rtk init --agent cline          # Cline / Roo Code
+rtk init --agent pi             # Pi
 rtk init --agent kilocode       # Kilo Code
 rtk init --agent antigravity    # Google Antigravity
 rtk init -g --agent pi          # Pi
