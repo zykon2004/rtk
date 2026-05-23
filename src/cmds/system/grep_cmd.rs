@@ -34,14 +34,14 @@ pub fn run(
     // false negatives that make AI agents draw wrong conclusions.
     // Using --no-ignore-vcs (not --no-ignore) so .ignore/.rgignore are still respected.
     //
-    // --with-filename: force rg to always include the filename, even for
-    // single-file invocations. Without it, rg emits `<line>:<content>` for a
-    // single file, and the parser cannot tell `<line>:<content>` from
-    // `<file>:<line>:<content>` when content itself contains ':' (issue #1436).
+    // -H: force rg to always include the filename, even for single-file searches.
+    // --null: separate file from line:content with a NUL byte so the parser is
+    // unambiguous even when the filename or content contains `:digits:`
+    // patterns (issue #1436).
     rg_cmd.args([
-        "-n",
+        "-nH",
         "--no-heading",
-        "--with-filename",
+        "--null",
         "--no-ignore-vcs",
         &rg_pattern,
         path,
@@ -62,9 +62,10 @@ pub fn run(
     let result = exec_capture(&mut rg_cmd)
         .or_else(|_| {
             let mut grep_cmd = resolved_command("grep");
-            // -H: always emit the filename so the parser sees a uniform
-            // file:line:content shape (parity with rg's --with-filename).
-            grep_cmd.args(["-rnH", pattern, path]).args(extra_args);
+            // -H: always emit the filename; -Z: NUL-separate filename from
+            // line:content so the parser can disambiguate even for filenames
+            // or content containing `:digits:` (parity with rg's --null).
+            grep_cmd.args(["-rnHZ", pattern, path]).args(extra_args);
             exec_capture(&mut grep_cmd)
         })
         .context("grep/rg failed")?;
@@ -170,27 +171,26 @@ pub fn run(
     Ok(exit_code)
 }
 
-/// Parses a single rg/grep match line of the form `file:line_number:content`.
+/// Parses a single rg/grep match line of the form `file\0line_number:content`.
 ///
-/// Always returns three colon-separated fields when the underlying command was
-/// invoked with `--with-filename` (rg) or `-H` (grep). Uses a greedy regex on
-/// the path so:
-///   - content with `::` (e.g. `ClassRegistry::init(...)`) does not split into
-///     a phantom file bucket (issue #1436);
-///   - paths with embedded `:` (Windows drive letters like `C:\foo\file.php`)
-///     parse correctly — the LAST `:digits:` before content is the boundary.
+/// Requires the underlying command to be invoked with `--null` (rg) or `-Z`
+/// (grep) so the filename is NUL-separated from `line:content`. NUL cannot
+/// appear in file paths, so the parser is unambiguous regardless of:
+///   - content with `:` or `::` (e.g. `ClassRegistry::init(...)`, issue #1436);
+///   - paths with embedded `:` (Windows drive letters, weird filenames like
+///     `badly_named:52:file.txt`).
 ///
 /// Returns `None` for lines that do not match the expected shape (e.g. rg
 /// `-A`/`-B` context lines that use `-` as separator).
 fn parse_match_line(line: &str) -> Option<(String, usize, &str)> {
     lazy_static::lazy_static! {
-        static ref MATCH_LINE_RE: Regex = Regex::new(r"^(.+):(\d+):(.*)$").unwrap();
+        static ref MATCH_LINE_RE: Regex = Regex::new(r"^([^\x00]+)\x00(\d+):(.*)$").unwrap();
     }
-    let caps = MATCH_LINE_RE.captures(line)?;
-    let file = caps.get(1)?.as_str().to_string();
-    let line_num: usize = caps.get(2)?.as_str().parse().ok()?;
-    let content_start = caps.get(3)?.start();
-    Some((file, line_num, &line[content_start..]))
+    MATCH_LINE_RE.captures(line).and_then(|caps| {
+        let (_, [file, line_num, content]) = caps.extract();
+        let line_num: usize = line_num.parse().ok()?;
+        Some((file.to_string(), line_num, content))
+    })
 }
 
 fn has_format_flag(extra_args: &[String]) -> bool {
@@ -419,10 +419,11 @@ mod tests {
     }
 
     // --- issue #1436: parse_match_line robustness ---
+    // Input shape is `file\0line:content` (rg --null / grep -Z).
 
     #[test]
     fn test_parse_match_line_simple() {
-        let line = "file.php:10:use Foo\\Bar;";
+        let line = "file.php\x0010:use Foo\\Bar;";
         let (file, line_num, content) = parse_match_line(line).unwrap();
         assert_eq!(file, "file.php");
         assert_eq!(line_num, 10);
@@ -430,12 +431,11 @@ mod tests {
     }
 
     // Issue #1436 reproducer: content with `::` must not split into a phantom
-    // file bucket. Before the fix, rg's single-file output `81:        $this->...
-    // ClassRegistry::init('...')` was parsed into 3 colon-fields, producing
-    // file="81", line=0, content=":init('...')".
+    // file bucket. With NUL separation between file and line:content, content
+    // colons are irrelevant to the parser.
     #[test]
     fn test_parse_match_line_content_with_double_colon() {
-        let line = "externalImportShell.class.php:81:        $this->queueProcessModel = ClassRegistry::init('Collections.QueueProcess');";
+        let line = "externalImportShell.class.php\x0081:        $this->queueProcessModel = ClassRegistry::init('Collections.QueueProcess');";
         let (file, line_num, content) = parse_match_line(line).unwrap();
         assert_eq!(file, "externalImportShell.class.php");
         assert_eq!(line_num, 81);
@@ -446,29 +446,53 @@ mod tests {
     }
 
     // Windows abs-path safety: drive letter + backslashes must not break the
-    // parser. Greedy regex on path picks the LAST `:digits:` boundary.
+    // parser. The NUL separator makes the file portion unambiguous.
     #[test]
     fn test_parse_match_line_windows_path() {
-        let line = r"C:\src\file.rs:42:fn main() {}";
+        let line = "C:\\src\\file.rs\x0042:fn main() {}";
         let (file, line_num, content) = parse_match_line(line).unwrap();
         assert_eq!(file, r"C:\src\file.rs");
         assert_eq!(line_num, 42);
         assert_eq!(content, "fn main() {}");
     }
 
+    // Filenames containing `:digits:` (which would fool a greedy `:` parser)
+    // must still parse correctly under NUL separation.
+    #[test]
+    fn test_parse_match_line_filename_with_colons() {
+        let line = "badly_named:52:file.txt\x001:xxx";
+        let (file, line_num, content) = parse_match_line(line).unwrap();
+        assert_eq!(file, "badly_named:52:file.txt");
+        assert_eq!(line_num, 1);
+        assert_eq!(content, "xxx");
+    }
+
+    // Content that itself contains `:digits:` (e.g. log lines, port numbers,
+    // line-number-like substrings) must not confuse the parser.
+    #[test]
+    fn test_parse_match_line_content_with_digit_colons() {
+        let line = "log.txt\x007:debug: counter is :42: now";
+        let (file, line_num, content) = parse_match_line(line).unwrap();
+        assert_eq!(file, "log.txt");
+        assert_eq!(line_num, 7);
+        assert_eq!(content, "debug: counter is :42: now");
+    }
+
     #[test]
     fn test_parse_match_line_malformed_returns_none() {
-        // Single token, no colons (e.g. an rg context line written with `-`)
+        // No NUL separator (e.g. rg/grep invoked without --null/-Z, or a
+        // context line written with `-`).
+        assert!(parse_match_line("file.rs:1:content").is_none());
         assert!(parse_match_line("not a match line").is_none());
-        // Missing line number
-        assert!(parse_match_line("file.rs:fn foo()").is_none());
+        // Missing line number after NUL
+        assert!(parse_match_line("file.rs\x00fn foo()").is_none());
         // Empty
         assert!(parse_match_line("").is_none());
     }
 
     #[test]
     fn test_parse_match_line_empty_content() {
-        let line = "file.rs:7:";
+        let line = "file.rs\x007:";
         let (file, line_num, content) = parse_match_line(line).unwrap();
         assert_eq!(file, "file.rs");
         assert_eq!(line_num, 7);
