@@ -2907,7 +2907,7 @@ fn resolve_codex_dir() -> Result<PathBuf> {
 
 fn resolve_pi_dir() -> Result<PathBuf> {
     resolve_pi_dir_from(
-        std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from),
+        std::env::var_os(PI_CODING_AGENT_DIR_ENV).map(PathBuf::from),
         dirs::home_dir(),
     )
 }

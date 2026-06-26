@@ -83,7 +83,7 @@ cargo install --path .
 ### Verify Installation
 
 ```bash
-rtk --version   # Should show "rtk 2.0.2"
+rtk --version   # Should show "rtk 2.1.0"
 rtk gain        # Should show token savings stats
 ```
 
