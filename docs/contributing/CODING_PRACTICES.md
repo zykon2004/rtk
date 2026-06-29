@@ -79,7 +79,7 @@ In short: avoid noise comments; keep the ones that would save a future reader a 
 
 Use explicit, descriptive names for variables, just like for functions.
 
-Do not hardcode repetitive patterns or values that control behavior — extract them into named constants at the top of the file. For anything a user might want to tune (thresholds, limits, display cutoffs), use `config::limits()` so it flows through `~/.config/rtk/config.toml`.
+Do not hardcode repetitive patterns or values that control behavior — extract them into named constants at the top of the file. For anything a user might want to tune (thresholds, limits, display cutoffs), use `config::limits()` so it flows through `~/.config/rtk/config.toml` (macOS: `~/Library/Application Support/rtk/config.toml`).
 
 Example from `src/cmds/git/git.rs`:
 

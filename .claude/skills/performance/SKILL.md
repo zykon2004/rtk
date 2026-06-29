@@ -204,7 +204,7 @@ sudo pkill dtrace
 ```rust
 // ❌ WRONG: File I/O on startup
 fn main() {
-    let config = load_config().unwrap(); // Reads ~/.config/rtk/config.toml
+    let config = load_config().unwrap(); // Reads ~/.config/rtk/config.toml (macOS: ~/Library/Application Support/rtk/config.toml)
     // ...
 }
 

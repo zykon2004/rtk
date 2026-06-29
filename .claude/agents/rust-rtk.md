@@ -312,7 +312,7 @@ fn test_real_git_log() {
 - `src/core/tracking.rs` - SQLite token savings tracking (`rtk gain`)
 - `src/core/filter.rs` - Language-aware code filtering engine
 - `src/core/tee.rs` - Raw output recovery on failure
-- `src/core/config.rs` - User configuration (~/.config/rtk/config.toml)
+- `src/core/config.rs` - User configuration (~/.config/rtk/config.toml; macOS: ~/Library/Application Support/rtk/config.toml)
 
 **Command modules** (`src/cmds/<ecosystem>/`):
 - `src/cmds/git/` - git.rs, gh_cmd.rs, gt_cmd.rs, diff_cmd.rs

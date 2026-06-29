@@ -17,7 +17,7 @@ Never use Bash for search (`find`, `grep`, `rg`) — use dedicated tools.
 src/
 ├── main.rs                    ← Commands enum + routing (start here for any command)
 ├── core/                      ← Shared infrastructure
-│   ├── config.rs              ← ~/.config/rtk/config.toml
+│   ├── config.rs              ← ~/.config/rtk/config.toml (macOS: ~/Library/Application Support/rtk/)
 │   ├── tracking.rs            ← SQLite token metrics
 │   ├── tee.rs                 ← Raw output recovery on failure
 │   ├── utils.rs               ← strip_ansi, truncate, execute_command
@@ -136,8 +136,8 @@ Glob pattern="tests/fixtures/*.txt"
 
 1. `src/core/config.rs` → `RtkConfig` struct
 2. `src/hooks/init.rs` → `rtk init` command
-3. Config file: `~/.config/rtk/config.toml`
-4. Filter files: `~/.config/rtk/filters/` (global) or `.rtk/filters/` (project)
+3. Config file: `~/.config/rtk/config.toml` (macOS: `~/Library/Application Support/rtk/config.toml`)
+4. Filter files: `~/.config/rtk/filters/` (global) or `.rtk/filters/` (project) — macOS uses `~/Library/Application Support/rtk/filters/`
 
 ## TOML Filter DSL Navigation
 

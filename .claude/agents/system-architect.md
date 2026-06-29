@@ -42,7 +42,7 @@ src/main.rs
 │
 ├── core/
 │   ├── tracking.rs       ← SQLite, token metrics, 90-day retention
-│   ├── config.rs         ← ~/.config/rtk/config.toml
+│   ├── config.rs         ← ~/.config/rtk/config.toml (macOS: ~/Library/Application Support/rtk/)
 │   ├── tee.rs            ← Raw output recovery on failure
 │   ├── filter.rs         ← Language-aware code filtering
 │   └── utils.rs          ← strip_ansi, truncate, execute_command

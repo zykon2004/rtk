@@ -213,7 +213,7 @@ Hooks never block command execution. If RTK is missing, the hook exits cleanly a
 RTK_DISABLED=1 git status    # runs raw git status, no rewrite
 ```
 
-Or exclude commands permanently in `~/.config/rtk/config.toml`:
+Or exclude commands permanently in `~/.config/rtk/config.toml` (macOS: `~/Library/Application Support/rtk/config.toml`):
 
 ```toml
 [hooks]

@@ -874,7 +874,7 @@ Modules with Exit Code Preservation:
 
 > For config file format, tee settings, tracking database path, and TOML filter tiers, see [src/core/README.md](src/core/README.md).
 
-Two tiers: **User settings** (`~/.config/rtk/config.toml`) and **LLM integration** (CLAUDE.md via `rtk init`).
+Two tiers: **User settings** (`~/.config/rtk/config.toml`; macOS: `~/Library/Application Support/rtk/config.toml`) and **LLM integration** (CLAUDE.md via `rtk init`).
 
 ### Initialization Flow
 
