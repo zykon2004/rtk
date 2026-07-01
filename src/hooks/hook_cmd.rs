@@ -112,11 +112,17 @@ fn get_rewritten(cmd: &str) -> Option<String> {
         return None;
     }
 
-    let (excluded, transparent_prefixes) = crate::core::config::Config::load()
-        .map(|c| (c.hooks.exclude_commands, c.hooks.transparent_prefixes))
+    let (excluded, transparent_prefixes, include) = crate::core::config::Config::load()
+        .map(|c| {
+            (
+                c.hooks.exclude_commands,
+                c.hooks.transparent_prefixes,
+                c.hooks.include_commands,
+            )
+        })
         .unwrap_or_default();
 
-    let rewritten = rewrite_command(cmd, &excluded, &transparent_prefixes)?;
+    let rewritten = rewrite_command(cmd, &excluded, &transparent_prefixes, &include)?;
 
     if rewritten == cmd {
         return None;
@@ -180,16 +186,10 @@ fn handle_copilot_cli(cmd: &str, args: &Value) -> Result<()> {
 }
 
 fn copilot_cli_response(cmd: &str, args: &Value) -> Option<Value> {
-    copilot_cli_response_from_decision(
-        args,
-        decide_hook_action(cmd, permissions::Host::Claude),
-    )
+    copilot_cli_response_from_decision(args, decide_hook_action(cmd, permissions::Host::Claude))
 }
 
-fn copilot_cli_response_from_decision(
-    args: &Value,
-    decision: HookDecision,
-) -> Option<Value> {
+fn copilot_cli_response_from_decision(args: &Value, decision: HookDecision) -> Option<Value> {
     let (rewritten, allow) = match decision {
         HookDecision::Deny => {
             return None;
@@ -457,7 +457,7 @@ mod tests {
     use super::*;
 
     fn rewrite_command_no_prefixes(cmd: &str, excluded: &[String]) -> Option<String> {
-        crate::discover::registry::rewrite_command(cmd, excluded, &[])
+        crate::discover::registry::rewrite_command(cmd, excluded, &[], &[])
     }
 
     // --- Copilot format detection ---
@@ -581,11 +581,10 @@ mod tests {
 
     #[test]
     fn test_copilot_cli_deny_returns_none() {
-        assert!(copilot_cli_response_from_decision(
-            &cli_args("cargo test"),
-            HookDecision::Deny,
-        )
-        .is_none());
+        assert!(
+            copilot_cli_response_from_decision(&cli_args("cargo test"), HookDecision::Deny,)
+                .is_none()
+        );
     }
 
     #[test]

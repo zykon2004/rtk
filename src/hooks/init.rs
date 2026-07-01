@@ -2218,13 +2218,7 @@ fn run_codex_mode(global: bool, patch_mode: PatchMode, ctx: InitContext) -> Resu
         (PathBuf::from(AGENTS_MD), PathBuf::from(RTK_MD), None)
     };
 
-    run_codex_mode_with_paths(
-        agents_md_path,
-        rtk_md_path,
-        config_path,
-        patch_mode,
-        ctx,
-    )
+    run_codex_mode_with_paths(agents_md_path, rtk_md_path, config_path, patch_mode, ctx)
 }
 
 fn run_codex_mode_with_paths(
@@ -2298,7 +2292,10 @@ fn run_codex_mode_with_paths(
                         println!("  Codex config patch skipped");
                     }
                     PatchResult::WouldPatch => {
-                        println!("  Codex writable root would be added: {}", data_dir.display());
+                        println!(
+                            "  Codex writable root would be added: {}",
+                            data_dir.display()
+                        );
                     }
                 }
                 if let Some(CodexConfigWarning::SandboxModeNotWorkspaceWrite(mode)) = warning {
@@ -2331,7 +2328,7 @@ fn patch_codex_writable_roots(
         .join(crate::core::constants::RTK_DATA_DIR);
 
     let existing = if config_path.exists() {
-        fs::read_to_string(&config_path)
+        fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read {}", config_path.display()))?
     } else {
         String::new()

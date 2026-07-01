@@ -16,11 +16,17 @@ use std::io::Write;
 /// | 2    | (none)   | Deny rule matched — hook defers to Claude Code native deny.  |
 /// | 3    | rewritten| Ask rule matched — hook rewrites but lets Claude Code prompt.|
 pub fn run(cmd: &str) -> anyhow::Result<()> {
-    let (excluded, transparent_prefixes) = crate::core::config::Config::load()
-        .map(|c| (c.hooks.exclude_commands, c.hooks.transparent_prefixes))
+    let (excluded, transparent_prefixes, include) = crate::core::config::Config::load()
+        .map(|c| {
+            (
+                c.hooks.exclude_commands,
+                c.hooks.transparent_prefixes,
+                c.hooks.include_commands,
+            )
+        })
         .unwrap_or_default();
 
-    match evaluate(cmd, &excluded, &transparent_prefixes) {
+    match evaluate(cmd, &excluded, &transparent_prefixes, &include) {
         RewriteOutcome::Allow(rewritten) => {
             print!("{}", rewritten);
             let _ = std::io::stdout().flush();
@@ -44,7 +50,12 @@ enum RewriteOutcome {
     Ask(String),
 }
 
-fn evaluate(cmd: &str, excluded: &[String], transparent_prefixes: &[String]) -> RewriteOutcome {
+fn evaluate(
+    cmd: &str,
+    excluded: &[String],
+    transparent_prefixes: &[String],
+    include: &[String],
+) -> RewriteOutcome {
     let verdict = check_command(cmd);
 
     if verdict == PermissionVerdict::Deny {
@@ -55,7 +66,7 @@ fn evaluate(cmd: &str, excluded: &[String], transparent_prefixes: &[String]) -> 
         return RewriteOutcome::Passthrough;
     }
 
-    match registry::rewrite_command(cmd, excluded, transparent_prefixes) {
+    match registry::rewrite_command(cmd, excluded, transparent_prefixes, include) {
         Some(rewritten) => match verdict {
             PermissionVerdict::Allow => RewriteOutcome::Allow(rewritten),
             _ => RewriteOutcome::Ask(rewritten),
@@ -69,7 +80,7 @@ mod tests {
     use super::*;
 
     fn rewrite_command_no_prefixes(cmd: &str) -> Option<String> {
-        registry::rewrite_command(cmd, &[], &[])
+        registry::rewrite_command(cmd, &[], &[], &[])
     }
 
     #[test]
@@ -90,13 +101,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_evaluate_include_allows_listed_family() {
+        assert!(matches!(
+            evaluate("eslint .", &[], &[], &["lint".to_string()]),
+            RewriteOutcome::Ask(rewritten) if rewritten == "rtk lint ."
+        ));
+    }
+
+    #[test]
+    fn test_evaluate_include_blocks_unlisted_family() {
+        let include = vec!["lint".to_string(), "vitest".to_string()];
+        assert_eq!(
+            evaluate("git status", &[], &[], &include),
+            RewriteOutcome::Passthrough
+        );
+    }
+
     mod unattestable_passthrough {
         use super::super::{evaluate, RewriteOutcome};
 
         #[test]
         fn test_backtick_substitution_passthrough() {
             assert_eq!(
-                evaluate("git status `rm -rf /tmp/x`", &[], &[]),
+                evaluate("git status `rm -rf /tmp/x`", &[], &[], &[]),
                 RewriteOutcome::Passthrough
             );
         }
@@ -104,7 +132,7 @@ mod tests {
         #[test]
         fn test_dollar_substitution_passthrough() {
             assert_eq!(
-                evaluate("git status $(rm -rf /tmp/x)", &[], &[]),
+                evaluate("git status $(rm -rf /tmp/x)", &[], &[], &[]),
                 RewriteOutcome::Passthrough
             );
         }
@@ -112,7 +140,7 @@ mod tests {
         #[test]
         fn test_double_quoted_substitution_passthrough() {
             assert_eq!(
-                evaluate("git log --pretty=\"$(rm -rf /tmp/x)\"", &[], &[]),
+                evaluate("git log --pretty=\"$(rm -rf /tmp/x)\"", &[], &[], &[]),
                 RewriteOutcome::Passthrough
             );
         }
@@ -120,7 +148,7 @@ mod tests {
         #[test]
         fn test_file_redirect_passthrough() {
             assert_eq!(
-                evaluate("git log > /tmp/out.txt", &[], &[]),
+                evaluate("git log > /tmp/out.txt", &[], &[], &[]),
                 RewriteOutcome::Passthrough
             );
         }
@@ -128,7 +156,7 @@ mod tests {
         #[test]
         fn test_fd_dup_redirect_still_rewrites() {
             assert!(matches!(
-                evaluate("git status 2>&1", &[], &[]),
+                evaluate("git status 2>&1", &[], &[], &[]),
                 RewriteOutcome::Ask(_)
             ));
         }
@@ -136,7 +164,7 @@ mod tests {
         #[test]
         fn test_plain_command_still_rewrites() {
             assert!(matches!(
-                evaluate("git status", &[], &[]),
+                evaluate("git status", &[], &[], &[]),
                 RewriteOutcome::Ask(_)
             ));
         }
@@ -219,7 +247,7 @@ mod tests {
 
             // Verify the rewrite exists (so the hook would output it),
             // but the exit code forces user confirmation.
-            assert!(registry::rewrite_command("git status", &[], &[]).is_some());
+            assert!(registry::rewrite_command("git status", &[], &[], &[]).is_some());
             assert_eq!(expected_exit_code(&verdict), 3);
         }
 

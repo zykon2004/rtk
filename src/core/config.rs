@@ -28,6 +28,21 @@ pub struct HooksConfig {
     #[serde(default)]
     pub exclude_commands: Vec<String>,
 
+    /// Allowlist of command families to auto-rewrite (e.g. ["lint", "vitest"]).
+    /// When non-empty, ONLY these families are rewritten — every other command
+    /// passes through to the raw shell unchanged, unfiltered by rtk.
+    ///
+    /// Names match the rtk subcommand family (the part after `rtk `, e.g.
+    /// `rtk lint` → `"lint"`, `rtk vitest` → `"vitest"`), not the raw shell
+    /// command — so `"lint"` covers `eslint`, `npx eslint`, `pnpm run lint`,
+    /// `biome`, etc. Matching is case-insensitive and an optional leading
+    /// `"rtk "` is ignored, so `"rtk lint"` and `"lint"` are equivalent.
+    ///
+    /// Leave empty (the default) to rewrite every supported command family,
+    /// subject only to `exclude_commands`.
+    #[serde(default)]
+    pub include_commands: Vec<String>,
+
     /// Wrapper prefixes that should be transparently stripped before routing
     /// to a filter, then re-prepended on the rewrite. For example, with
     /// `transparent_prefixes = ["docker exec mycontainer"]`, the command
@@ -213,6 +228,28 @@ exclude_commands = ["curl", "gh"]
         let config = Config::default();
         assert!(config.hooks.exclude_commands.is_empty());
         assert!(config.hooks.transparent_prefixes.is_empty());
+        assert!(config.hooks.include_commands.is_empty());
+    }
+
+    #[test]
+    fn test_hooks_config_include_commands_deserialize() {
+        let toml = r#"
+[hooks]
+include_commands = ["lint", "vitest"]
+"#;
+        let config: Config = toml::from_str(toml).expect("valid toml");
+        assert_eq!(config.hooks.include_commands, vec!["lint", "vitest"]);
+    }
+
+    #[test]
+    fn test_hooks_config_include_commands_missing_is_empty() {
+        // Older configs that predate this field must still parse.
+        let toml = r#"
+[hooks]
+exclude_commands = ["curl"]
+"#;
+        let config: Config = toml::from_str(toml).expect("valid toml");
+        assert!(config.hooks.include_commands.is_empty());
     }
 
     #[test]

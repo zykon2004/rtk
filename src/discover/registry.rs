@@ -496,10 +496,14 @@ fn collapse_line_continuations(s: &str) -> std::borrow::Cow<'_, str> {
 /// starts with `"foo bar "` (or strictly equals `"foo bar"`), not anything
 /// else. Matching is literal, not pattern-based: configure the exact concrete
 /// prefix you use.
+/// `include` is an optional allowlist of command families (e.g. `["lint",
+/// "vitest"]`). When non-empty, ONLY families named in it are rewritten;
+/// everything else passes through unchanged. Pass `&[]` for no restriction.
 pub fn rewrite_command(
     cmd: &str,
     excluded: &[String],
     transparent_prefixes: &[String],
+    include: &[String],
 ) -> Option<String> {
     // Bash line continuations (`\<NL>`, `\<CRLF>`) and the leading whitespace that
     // follows are syntactically equivalent to a single space, but `cmd.trim()` does
@@ -530,7 +534,7 @@ pub fn rewrite_command(
         return Some(trimmed.to_string());
     }
 
-    rewrite_compound(trimmed, &compiled, &normalized_prefixes)
+    rewrite_compound(trimmed, &compiled, &normalized_prefixes, include)
 }
 
 /// Rewrite a compound command (with `&&`, `||`, `;`, `|`) by rewriting each segment.
@@ -538,6 +542,7 @@ fn rewrite_compound(
     cmd: &str,
     excluded: &[ExcludePattern],
     transparent_prefixes: &[String],
+    include: &[String],
 ) -> Option<String> {
     let tokens = tokenize(cmd);
     let mut result = String::with_capacity(cmd.len() + 32);
@@ -551,7 +556,7 @@ fn rewrite_compound(
         match tok.kind {
             TokenKind::Operator => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded, transparent_prefixes)
+                let rewritten = rewrite_segment(seg, excluded, transparent_prefixes, include)
                     .unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
@@ -582,7 +587,7 @@ fn rewrite_compound(
                 let rewritten = if is_pipe_incompatible {
                     seg.to_string()
                 } else {
-                    rewrite_segment(seg, excluded, transparent_prefixes)
+                    rewrite_segment(seg, excluded, transparent_prefixes, include)
                         .unwrap_or_else(|| seg.to_string())
                 };
                 if rewritten != seg {
@@ -611,7 +616,7 @@ fn rewrite_compound(
             }
             TokenKind::Shellism if tok.value == "&" => {
                 let seg = cmd[seg_start..tok.offset].trim();
-                let rewritten = rewrite_segment(seg, excluded, transparent_prefixes)
+                let rewritten = rewrite_segment(seg, excluded, transparent_prefixes, include)
                     .unwrap_or_else(|| seg.to_string());
                 if rewritten != seg {
                     any_changed = true;
@@ -628,8 +633,8 @@ fn rewrite_compound(
     }
 
     let seg = cmd[seg_start..].trim();
-    let rewritten =
-        rewrite_segment(seg, excluded, transparent_prefixes).unwrap_or_else(|| seg.to_string());
+    let rewritten = rewrite_segment(seg, excluded, transparent_prefixes, include)
+        .unwrap_or_else(|| seg.to_string());
     if rewritten != seg {
         any_changed = true;
     }
@@ -728,8 +733,9 @@ fn rewrite_segment(
     seg: &str,
     excluded: &[ExcludePattern],
     transparent_prefixes: &[String],
+    include: &[String],
 ) -> Option<String> {
-    rewrite_segment_inner(seg, excluded, transparent_prefixes, 0)
+    rewrite_segment_inner(seg, excluded, transparent_prefixes, include, 0)
 }
 
 fn is_excluded(cmd: &str, excluded: &[ExcludePattern]) -> bool {
@@ -739,10 +745,29 @@ fn is_excluded(cmd: &str, excluded: &[ExcludePattern]) -> bool {
     })
 }
 
+/// Whether `rtk_equivalent` (e.g. `"rtk lint"`) is allowed by the configured
+/// `include_commands` allowlist. An empty allowlist means "no restriction —
+/// allow every family." Matching is on the family name after `rtk `,
+/// case-insensitive, with an optional leading `"rtk "` in `include` ignored.
+fn is_included(rtk_equivalent: &str, include: &[String]) -> bool {
+    if include.is_empty() {
+        return true;
+    }
+    let family = rtk_equivalent
+        .strip_prefix("rtk ")
+        .unwrap_or(rtk_equivalent);
+    include.iter().any(|entry| {
+        let lower = entry.trim().to_ascii_lowercase();
+        let entry_family = lower.strip_prefix("rtk ").unwrap_or(&lower);
+        entry_family.eq_ignore_ascii_case(family)
+    })
+}
+
 fn rewrite_segment_inner(
     seg: &str,
     excluded: &[ExcludePattern],
     transparent_prefixes: &[String],
+    include: &[String],
     depth: usize,
 ) -> Option<String> {
     let trimmed = seg.trim();
@@ -765,8 +790,13 @@ fn rewrite_segment_inner(
             );
             return None;
         }
-        let rewritten =
-            rewrite_segment_inner(rest_after_env, excluded, transparent_prefixes, depth + 1)?;
+        let rewritten = rewrite_segment_inner(
+            rest_after_env,
+            excluded,
+            transparent_prefixes,
+            include,
+            depth + 1,
+        )?;
         return Some(format!("{}{}", env_prefix, rewritten));
     }
 
@@ -775,7 +805,7 @@ fn rewrite_segment_inner(
             if rest.is_empty() {
                 return None;
             }
-            return rewrite_segment_inner(rest, excluded, transparent_prefixes, depth + 1)
+            return rewrite_segment_inner(rest, excluded, transparent_prefixes, include, depth + 1)
                 .map(|rewritten| format!("{} {}", prefix, rewritten));
         }
     }
@@ -787,7 +817,7 @@ fn rewrite_segment_inner(
             if rest.is_empty() {
                 return None;
             }
-            return rewrite_segment_inner(rest, excluded, transparent_prefixes, depth + 1)
+            return rewrite_segment_inner(rest, excluded, transparent_prefixes, include, depth + 1)
                 .map(|rewritten| format!("{} {}", prefix, rewritten));
         }
     }
@@ -821,6 +851,9 @@ fn rewrite_segment_inner(
             let stripped = ENV_PREFIX.replace(cmd_part, "");
             let cmd_clean = stripped.trim();
             if is_excluded(cmd_clean, excluded) {
+                return None;
+            }
+            if !is_included(rtk_equivalent, include) {
                 return None;
             }
             rtk_equivalent
@@ -891,7 +924,7 @@ mod tests {
     use super::*;
 
     fn rewrite_command_no_prefixes(cmd: &str, excluded: &[String]) -> Option<String> {
-        super::rewrite_command(cmd, excluded, &[])
+        super::rewrite_command(cmd, excluded, &[], &[])
     }
 
     #[test]
@@ -2171,7 +2204,7 @@ mod tests {
     #[test]
     fn test_rewrite_xcodebuild() {
         assert_eq!(
-            rewrite_command("xcodebuild test -scheme App", &[], &[]),
+            rewrite_command("xcodebuild test -scheme App", &[], &[], &[]),
             Some("rtk xcodebuild test -scheme App".into())
         );
     }
@@ -3861,7 +3894,7 @@ mod tests {
     fn test_transparent_prefix_strips_and_reprepends() {
         let prefixes = vec!["shadowenv exec --".to_string()];
         assert_eq!(
-            super::rewrite_command("shadowenv exec -- git status", &[], &prefixes),
+            super::rewrite_command("shadowenv exec -- git status", &[], &prefixes, &[]),
             Some("shadowenv exec -- rtk git status".into())
         );
     }
@@ -3870,7 +3903,7 @@ mod tests {
     fn test_transparent_prefix_with_test_runner() {
         let prefixes = vec!["shadowenv exec --".to_string()];
         assert_eq!(
-            super::rewrite_command("shadowenv exec -- cargo test", &[], &prefixes),
+            super::rewrite_command("shadowenv exec -- cargo test", &[], &prefixes, &[]),
             Some("shadowenv exec -- rtk cargo test".into())
         );
     }
@@ -3879,7 +3912,7 @@ mod tests {
     fn test_transparent_prefix_unknown_inner_returns_none() {
         let prefixes = vec!["shadowenv exec --".to_string()];
         assert_eq!(
-            super::rewrite_command("shadowenv exec -- htop", &[], &prefixes),
+            super::rewrite_command("shadowenv exec -- htop", &[], &prefixes, &[]),
             None
         );
     }
@@ -3888,7 +3921,7 @@ mod tests {
     fn test_transparent_prefix_not_matched_is_passthrough() {
         // Without the prefix configured, the wrapper breaks routing.
         assert_eq!(
-            super::rewrite_command("shadowenv exec -- git status", &[], &[]),
+            super::rewrite_command("shadowenv exec -- git status", &[], &[], &[]),
             None
         );
     }
@@ -3899,7 +3932,7 @@ mod tests {
         // user layer strips shadowenv exec --, inner `git status` routes.
         let prefixes = vec!["shadowenv exec --".to_string()];
         assert_eq!(
-            super::rewrite_command("noglob shadowenv exec -- git status", &[], &prefixes),
+            super::rewrite_command("noglob shadowenv exec -- git status", &[], &prefixes, &[]),
             Some("noglob shadowenv exec -- rtk git status".into())
         );
     }
@@ -3908,7 +3941,7 @@ mod tests {
     fn test_transparent_prefix_composed_with_env_prefix() {
         let prefixes = vec!["bundle exec".to_string()];
         assert_eq!(
-            super::rewrite_command("RAILS_ENV=test bundle exec git status", &[], &prefixes),
+            super::rewrite_command("RAILS_ENV=test bundle exec git status", &[], &prefixes, &[]),
             Some("RAILS_ENV=test bundle exec rtk git status".into())
         );
     }
@@ -3925,7 +3958,7 @@ mod tests {
     fn test_transparent_prefix_multiple_configured() {
         let prefixes = vec!["shadowenv exec --".to_string(), "direnv exec .".to_string()];
         assert_eq!(
-            super::rewrite_command("direnv exec . git status", &[], &prefixes),
+            super::rewrite_command("direnv exec . git status", &[], &prefixes, &[]),
             Some("direnv exec . rtk git status".into())
         );
     }
@@ -3948,7 +3981,7 @@ mod tests {
     fn test_transparent_prefix_overlapping_entries_use_longest_match() {
         let prefixes = vec!["docker".to_string(), "docker exec app".to_string()];
         assert_eq!(
-            super::rewrite_command("docker exec app git status", &[], &prefixes),
+            super::rewrite_command("docker exec app git status", &[], &prefixes, &[]),
             Some("docker exec app rtk git status".into())
         );
     }
@@ -3958,7 +3991,7 @@ mod tests {
         // A prefix `"foo"` must NOT match `"foobar git status"`.
         let prefixes = vec!["foo".to_string()];
         assert_eq!(
-            super::rewrite_command("foobar git status", &[], &prefixes),
+            super::rewrite_command("foobar git status", &[], &prefixes, &[]),
             None
         );
     }
@@ -3967,7 +4000,7 @@ mod tests {
     fn test_transparent_prefix_empty_rest_returns_none() {
         let prefixes = vec!["shadowenv exec --".to_string()];
         assert_eq!(
-            super::rewrite_command("shadowenv exec --", &[], &prefixes),
+            super::rewrite_command("shadowenv exec --", &[], &prefixes, &[]),
             None
         );
     }
@@ -3977,7 +4010,7 @@ mod tests {
         // A blank entry in the config should not cause spurious matches or panics.
         let prefixes = vec!["".to_string(), "   ".to_string()];
         assert_eq!(
-            super::rewrite_command("git status", &[], &prefixes),
+            super::rewrite_command("git status", &[], &prefixes, &[]),
             Some("rtk git status".into())
         );
     }
@@ -3990,7 +4023,8 @@ mod tests {
             super::rewrite_command(
                 "shadowenv exec -- git status && shadowenv exec -- cargo test",
                 &[],
-                &prefixes
+                &prefixes,
+                &[]
             ),
             Some("shadowenv exec -- rtk git status && shadowenv exec -- rtk cargo test".into())
         );
@@ -4003,8 +4037,65 @@ mod tests {
         let prefixes = vec!["shadowenv exec --".to_string()];
         let excluded = vec!["git".to_string()];
         assert_eq!(
-            super::rewrite_command("shadowenv exec -- git status", &excluded, &prefixes),
+            super::rewrite_command("shadowenv exec -- git status", &excluded, &prefixes, &[]),
             None
+        );
+    }
+
+    #[test]
+    fn test_include_commands_allows_listed_family() {
+        // "lint" allowlisted → eslint rewrites normally.
+        assert_eq!(
+            super::rewrite_command("eslint .", &[], &[], &["lint".to_string()]),
+            Some("rtk lint .".into())
+        );
+    }
+
+    #[test]
+    fn test_include_commands_allows_vitest_alias() {
+        // "vitest" allowlisted → npx vitest (an alias) still resolves to the
+        // same family and rewrites.
+        assert_eq!(
+            super::rewrite_command("npx vitest run", &[], &[], &["vitest".to_string()]),
+            Some("rtk vitest".into())
+        );
+    }
+
+    #[test]
+    fn test_include_commands_blocks_unlisted_family() {
+        // "lint"/"vitest" allowlisted → git is not, so it passes through raw.
+        let include = vec!["lint".to_string(), "vitest".to_string()];
+        assert_eq!(
+            super::rewrite_command("git status", &[], &[], &include),
+            None
+        );
+    }
+
+    #[test]
+    fn test_include_commands_matches_case_insensitively_and_rtk_prefix() {
+        let include = vec!["Rtk Lint".to_string()];
+        assert_eq!(
+            super::rewrite_command("eslint .", &[], &[], &include),
+            Some("rtk lint .".into())
+        );
+    }
+
+    #[test]
+    fn test_include_commands_empty_allows_everything() {
+        // Empty allowlist (the default) is a no-op — no restriction applied.
+        assert_eq!(
+            super::rewrite_command("git status", &[], &[], &[]),
+            Some("rtk git status".into())
+        );
+    }
+
+    #[test]
+    fn test_include_commands_applies_per_segment_in_compound() {
+        // Only the vitest segment should rewrite; the git segment stays raw.
+        let include = vec!["vitest".to_string()];
+        assert_eq!(
+            super::rewrite_command("git status && vitest run", &[], &[], &include),
+            Some("git status && rtk vitest".into())
         );
     }
 
@@ -4020,7 +4111,7 @@ mod tests {
         cmd.push_str("git status");
         // Doesn't matter exactly what it returns — just that it doesn't stack-
         // overflow or loop forever. Exercise the code path.
-        let _ = super::rewrite_command(&cmd, &[], &prefixes);
+        let _ = super::rewrite_command(&cmd, &[], &prefixes, &[]);
     }
 
     #[test]
